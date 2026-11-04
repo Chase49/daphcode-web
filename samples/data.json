@@ -1,0 +1,12 @@
+{
+  "name": "daphcode-sample",
+  "version": "1.0.0",
+  "features": ["tabs", "folding", "minimap", "pinch-zoom"],
+  "editor": {
+    "fontSize": 14,
+    "wordWrap": false,
+    "theme": { "name": "Dark+", "base": "vs-dark" }
+  },
+  "broken": [1, 2, 3,],
+  "nullable": null
+}

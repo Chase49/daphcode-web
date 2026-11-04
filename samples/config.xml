@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <!-- sample configuration -->
+  <appSettings>
+    <add key="theme" value="dark" />
+    <add key="fontSize" value="14" />
+  </appSettings>
+  <languages default="plaintext">
+    <language id="python" extensions=".py;.pyw" />
+    <language id="kotlin" extensions=".kt;.kts" />
+  </languages>
+</configuration>

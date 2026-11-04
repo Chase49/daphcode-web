@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#1e1e1e">
+<meta name="description" content="DaphCode is a local-first Monaco code and text editor for desktop and mobile browsers.">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>DaphCode</title>
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="stylesheet" href="codicon.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="no-editor">
+<div id="workbench">
+  <header id="titlebar">
+    <button class="tb-btn" data-cmd="menu.main" aria-label="Menu"><i class="codicon codicon-menu"></i></button>
+    <div id="title-text">DaphCode</div>
+    <div class="tb-right">
+      <button class="tb-btn" data-cmd="edit.undo" aria-label="Undo"><i class="codicon codicon-discard"></i></button>
+      <button class="tb-btn" data-cmd="edit.redo" aria-label="Redo"><i class="codicon codicon-redo"></i></button>
+      <button class="tb-btn" data-cmd="find" aria-label="Find"><i class="codicon codicon-search"></i></button>
+      <button class="tb-btn" data-cmd="palette" aria-label="Command Palette"><i class="codicon codicon-terminal-cmd"></i></button>
+      <button class="tb-btn" data-cmd="menu.more" aria-label="More"><i class="codicon codicon-ellipsis"></i></button>
+    </div>
+  </header>
+  <div id="tabs-row">
+    <div id="tabs" role="tablist" aria-label="Open editors"></div>
+    <div class="tabs-actions">
+      <button class="tb-btn" data-cmd="file.save" aria-label="Save"><i class="codicon codicon-save"></i></button>
+      <button class="tb-btn" data-cmd="menu.tabs" aria-label="Editor actions"><i class="codicon codicon-ellipsis"></i></button>
+    </div>
+  </div>
+  <div id="breadcrumbs" role="navigation" aria-label="Document location"></div>
+  <main id="editor-area">
+    <div id="editor" role="region" aria-label="Code editor"></div>
+    <div id="welcome">
+      <div class="wm-logo"><i class="codicon codicon-code"></i></div>
+      <h1 class="wm-title">DaphCode</h1>
+      <div class="wm-sub">Editing evolved</div>
+      <div class="wm-cols">
+        <div class="wm-col">
+          <h2>Start</h2>
+          <a href="#" data-cmd="file.newNamed"><i class="codicon codicon-new-file"></i>New File...</a>
+          <a href="#" data-cmd="file.newUntitled"><i class="codicon codicon-file"></i>New Text File</a>
+          <a href="#" data-cmd="file.open"><i class="codicon codicon-folder-opened"></i>Open File...</a>
+          <a href="#" data-cmd="samples"><i class="codicon codicon-library"></i>Open Sample Files</a>
+        </div>
+        <div class="wm-col">
+          <h2>Recent</h2>
+          <div id="wm-recent"></div>
+        </div>
+      </div>
+      <div class="wm-version" id="wm-version"></div>
+    </div>
+    <div id="handle-a" class="sel-handle start"></div>
+    <div id="handle-b" class="sel-handle end"></div>
+    <div id="selbar"></div>
+  </main>
+  <div id="accessory"></div>
+  <footer id="statusbar">
+    <div class="sb-left">
+      <div class="sb-item" data-cmd="problems" id="sb-problems" role="button" tabindex="0" aria-label="Problems"><i class="codicon codicon-error"></i><span id="sb-err">0</span><i class="codicon codicon-warning"></i><span id="sb-warn">0</span></div>
+    </div>
+    <div class="sb-right">
+      <div class="sb-item" data-cmd="gotoLine" id="sb-pos" role="button" tabindex="0">Ln 1, Col 1</div>
+      <div class="sb-item" data-cmd="pick.indent" id="sb-indent" role="button" tabindex="0">Spaces: 4</div>
+      <div class="sb-item" data-cmd="pick.encoding" id="sb-enc" role="button" tabindex="0">UTF-8</div>
+      <div class="sb-item" data-cmd="pick.eol" id="sb-eol" role="button" tabindex="0">LF</div>
+      <div class="sb-item" data-cmd="pick.language" id="sb-lang" role="button" tabindex="0">Plain Text</div>
+      <div class="sb-item" data-cmd="pick.zoom" id="sb-zoom" role="button" tabindex="0">100%</div>
+      <div class="sb-item" data-cmd="notifications" id="sb-bell" role="button" tabindex="0" aria-label="Notifications"><i class="codicon codicon-bell"></i></div>
+    </div>
+  </footer>
+</div>
+<div id="menu-layer"></div>
+<div id="quick-input" role="dialog" aria-modal="true" aria-labelledby="qi-title" hidden>
+  <div class="qi-box">
+    <div class="qi-title" id="qi-title"></div>
+    <input id="qi-input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Command or file name">
+    <div class="qi-msg" id="qi-msg"></div>
+    <div class="qi-list" id="qi-list"></div>
+  </div>
+</div>
+<div id="dialog-layer" role="dialog" aria-modal="true" aria-labelledby="dlg-msg" aria-describedby="dlg-detail" hidden>
+  <div class="dlg">
+    <div class="dlg-body"><i class="codicon codicon-warning dlg-icon"></i><div><div class="dlg-msg" id="dlg-msg"></div><div class="dlg-detail" id="dlg-detail"></div></div></div>
+    <div class="dlg-buttons" id="dlg-buttons"></div>
+  </div>
+</div>
+<div id="problems-panel" hidden>
+  <div class="pp-head"><span>PROBLEMS</span><button class="tb-btn" data-cmd="problems" aria-label="Close"><i class="codicon codicon-close"></i></button></div>
+  <div class="pp-list" id="pp-list"></div>
+</div>
+<div id="toasts" aria-live="polite" aria-atomic="false"></div>
+<script src="core.js"></script>
+<script src="languages.js"></script>
+<script src="gestures.js"></script>
+<script src="filedialog.js"></script>
+<script src="diagnostics.js"></script>
+<script src="highlighting.js"></script>
+<script src="web-host.js"></script>
+<script src="vs/loader.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
