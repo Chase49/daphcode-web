@@ -55,6 +55,8 @@
       return {
         native: true,
         openFiles: () => A.openFiles(),
+        openFolder: () => A.openFolder(),
+        listFolder: (uri) => { const r = safeJson(A.listFolder(uri)) || {}; if (!r.ok) throw new Error(r.error || "Could not read folder."); return r.entries || []; },
         take: (t) => A.take(t),
         chunked: typeof A.takeChunk === "function",
         chunkCount: (t) => (typeof A.chunkCount === "function" ? A.chunkCount(t) : -1),
@@ -110,6 +112,8 @@
         };
         inp.click();
       },
+      openFolder: () => later(() => { if (self.__folderRoot) DaphHost.onFolderOpened(self.__folderRoot); }),
+      listFolder: (uri) => { const entries = (self.__folders || {})[uri]; if (!entries) throw new Error("Could not read folder."); return entries; },
       chunked: true,
       canChunkSave: true,
       chunkCount: (t) => {
@@ -228,6 +232,24 @@
   // ---- All files access: when granted, Open / Save As use the built-in file browser.
   const storage = { granted: false, home: "/storage/emulated/0" };
   let fileDlg = null;
+  let workspace = null;
+
+  function folderWorkspace() {
+    if (!workspace) {
+      workspace = DaphWorkspace.create({
+        Host, document, el, icon, tapper, toast,
+        fileIcon: (name) => {
+          const [ic, color] = L.icon(monaco ? L.resolve(monaco, name, "") : "plaintext");
+          const i = icon(ic);
+          if (color) i.style.color = color;
+          return i;
+        },
+        onOpenFile: (uri) => reopen(uri),
+        onLayout: () => { if (editor) editor.layout(); },
+      });
+    }
+    return workspace;
+  }
 
   function refreshStorage() {
     const s = Host.storageState ? Host.storageState() : null;
@@ -1257,9 +1279,11 @@
       items.push({ id: "recent:" + r.uri, uri: r.uri, label: r.name, desc: "recently opened", icon: "codicon-history", group: 1, sep: "recently opened" });
     }
     items.push({ id: "cmd:open", label: "Open File...", icon: "codicon-folder-opened", group: 2, sep: "other" });
+    items.push({ id: "cmd:openFolder", label: "Open Folder...", icon: "codicon-folder-opened", group: 2 });
     quickPick(items, { title: "", placeholder: "Search open editors and recent files by name", activeId: active && active.id }).then((it) => {
       if (!it) return;
       if (it.id === "cmd:open") { run("file.open"); return; }
+      if (it.id === "cmd:openFolder") { run("folder.open"); return; }
       if (it.uri) { reopen(it.uri); return; }
       activate(tabById(it.id));
     });
@@ -1322,6 +1346,7 @@
       { label: "New Text File", key: "Ctrl+N", cmd: "file.newUntitled" },
       { label: "New File...", cmd: "file.newNamed" },
       { label: "Open File...", key: "Ctrl+O", cmd: "file.open" },
+      { label: "Open Folder...", key: "Ctrl+K Ctrl+O", cmd: "folder.open" },
       { label: "Open Recent...", key: "Ctrl+R", cmd: "quickOpen" },
       "-",
       { label: "Save", key: "Ctrl+S", cmd: "file.save", disabled: !active },
@@ -1450,6 +1475,10 @@
     "file.newUntitled": () => newUntitled(),
     "file.newNamed": () => newNamed(),
     "file.open": () => openFileFlow(),
+    "folder.open": () => folderWorkspace().open(),
+    "folder.close": () => folderWorkspace().close(),
+    "folder.refresh": () => folderWorkspace().refresh(),
+    "folder.toggle": () => folderWorkspace().toggle(),
     "storage.access": () => allFilesAccessFlow(),
     "file.save": () => saveTab(active),
     "file.saveAs": () => saveTab(active, true),
@@ -1908,6 +1937,7 @@
   }
 
   function wireChrome() {
+    folderWorkspace();
     lockContainerScroll();
     // keepFocus: the button must not steal focus, otherwise the tap's synthetic mousedown
     // blurs whatever the command just focused (e.g. the Command Palette input closes itself).
@@ -1975,6 +2005,7 @@
       ["daph.new", "File: New Text File", [K.CtrlCmd | KC.KeyN], "file.newUntitled"],
       ["daph.newNamed", "File: New File...", [K.CtrlCmd | K.Alt | KC.KeyN], "file.newNamed"],
       ["daph.open", "File: Open File...", [K.CtrlCmd | KC.KeyO], "file.open"],
+      ["daph.openFolder", "File: Open Folder...", [K.CtrlCmd | KC.KeyK, K.CtrlCmd | KC.KeyO], "folder.open"],
       ["daph.rename", "File: Rename...", [Host.web ? KC.F2 : KC.F2 | K.Shift], "file.rename"],
       ["daph.revert", "File: Revert File", [], "file.revert"],
       ["daph.close", "View: Close Editor", [Host.web ? K.Alt | KC.KeyW : K.CtrlCmd | KC.KeyW], "file.close"],
@@ -2188,6 +2219,7 @@
   }
 
   self.DaphHost = {
+    onFolderOpened(meta) { folderWorkspace().opened(meta); },
     onOpening(name, size) {
       toast("Opening " + name + " (" + C.humanSize(size) + ")…");
     },
@@ -2273,6 +2305,7 @@
       if (!$("#quick-input").hidden) { closeQuickInput(undefined); return; }
       if (currentMenuLayer().classList.contains("open")) { closeMenu(); return; }
       if (!$("#problems-panel").hidden) { toggleProblems(); return; }
+      if (workspace && workspace.back()) return;
       const dom = editor && editor.getDomNode();
       const widget = dom && document.querySelector(".suggest-widget.visible, .find-widget.visible, .quick-input-widget:not([style*='display: none'])");
       if (widget) {
@@ -2327,6 +2360,7 @@
       wireChrome();
       renderWelcome();
       if (!restoreSession()) { renderTabs(); updateTitle(); }
+      folderWorkspace().restore();
       document.fonts && document.fonts.ready.then(() => monaco.editor.remeasureFonts());
       addEventListener("pagehide", () => flushSession());
       document.addEventListener("visibilitychange", () => { if (document.hidden) flushSession(); });

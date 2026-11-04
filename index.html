@@ -16,6 +16,7 @@
 <div id="workbench">
   <header id="titlebar">
     <button class="tb-btn" data-cmd="menu.main" aria-label="Menu"><i class="codicon codicon-menu"></i></button>
+    <button id="explorer-button" class="tb-btn" data-cmd="folder.toggle" aria-label="Toggle Explorer" aria-pressed="false" hidden><i class="codicon codicon-folder"></i></button>
     <div id="title-text">DaphCode</div>
     <div class="tb-right">
       <button class="tb-btn" data-cmd="edit.undo" aria-label="Undo"><i class="codicon codicon-discard"></i></button>
@@ -33,7 +34,12 @@
     </div>
   </div>
   <div id="breadcrumbs" role="navigation" aria-label="Document location"></div>
-  <main id="editor-area">
+  <div id="main-row">
+    <aside id="workspace" aria-label="Explorer" hidden>
+      <div id="workspace-header"><span id="workspace-title">EXPLORER</span><button class="tb-btn" data-cmd="folder.refresh" aria-label="Refresh Explorer"><i class="codicon codicon-refresh"></i></button><button class="tb-btn" data-cmd="folder.close" aria-label="Close Folder"><i class="codicon codicon-close"></i></button></div>
+      <div id="workspace-tree" role="tree" aria-label="Folder contents"></div>
+    </aside>
+    <main id="editor-area">
     <div id="editor" role="region" aria-label="Code editor"></div>
     <div id="welcome">
       <div class="wm-logo"><i class="codicon codicon-code"></i></div>
@@ -45,6 +51,7 @@
           <a href="#" data-cmd="file.newNamed"><i class="codicon codicon-new-file"></i>New File...</a>
           <a href="#" data-cmd="file.newUntitled"><i class="codicon codicon-file"></i>New Text File</a>
           <a href="#" data-cmd="file.open"><i class="codicon codicon-folder-opened"></i>Open File...</a>
+          <a href="#" data-cmd="folder.open"><i class="codicon codicon-folder-opened"></i>Open Folder...</a>
           <a href="#" data-cmd="samples"><i class="codicon codicon-library"></i>Open Sample Files</a>
         </div>
         <div class="wm-col">
@@ -58,6 +65,7 @@
     <div id="handle-b" class="sel-handle end"></div>
     <div id="selbar"></div>
   </main>
+  </div>
   <div id="accessory"></div>
   <footer id="statusbar">
     <div class="sb-left">
@@ -102,6 +110,7 @@
 <script src="highlighting.js"></script>
 <script src="web-host.js"></script>
 <script src="vs/loader.js"></script>
+<script src="workspace.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

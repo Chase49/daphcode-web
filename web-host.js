@@ -4,6 +4,7 @@
   const READ_BYTES = 1 << 20;
   const TEXT_CHARS = 1 << 20;
   const RECENTS_KEY = "daphcode.web.recents.v1";
+  const FOLDER_KEY = "daphcode.folder.v1";
   const DB_NAME = "daphcode.web.v1";
   const STORE_NAME = "handles";
 
@@ -140,6 +141,16 @@
     }
   }
 
+  function parseFolderUri(uri) {
+    const match = /^webdir:\/\/([^/]+)\/(.+)$/.exec(uri || "");
+    if (!match) return null;
+    try {
+      return { id: match[1], name: decodeURIComponent(match[2]) };
+    } catch (_) {
+      return null;
+    }
+  }
+
   function baseName(value) {
     const clean = String(value || "").replace(/[\\/]+$/, "");
     return clean.slice(clean.lastIndexOf("/") + 1) || "untitled.txt";
@@ -152,6 +163,8 @@
     const handles = new Map();
     const files = new Map();
     const downloads = new Map();
+    const folders = new Map();
+    const listed = new Map();
     const uris = new Map();
     const fingerprints = new Map();
     let clip = "";
@@ -293,16 +306,20 @@
       return handle;
     }
 
-    async function uriForHandle(handle, name) {
+    async function uriForHandle(handle, name, scheme) {
+      const kind = scheme || "webfs";
       if (typeof handle.isSameEntry === "function") {
         for (const [id, existing] of handles) {
           try {
-            if (await existing.isSameEntry(handle)) return { id, uri: uris.get(id) || makeUri("webfs", name, id) };
+            if (await existing.isSameEntry(handle)) {
+              const current = uris.get(id);
+              if (current && current.startsWith(kind + "://")) return { id, uri: current };
+            }
           } catch (_) {}
         }
       }
       const id = randomId();
-      return { id, uri: makeUri("webfs", name, id) };
+      return { id, uri: makeUri(kind, name, id) };
     }
 
     async function openHandle(handle, req, interactive) {
@@ -317,8 +334,9 @@
       await deliverBlob(identity.uri, file, req);
     }
 
-    async function openFile(file, req) {
-      const fingerprint = file.name + "|" + file.size + "|" + file.lastModified;
+    function registerFile(file) {
+      const relative = file.webkitRelativePath || file.name;
+      const fingerprint = relative + "|" + file.size + "|" + file.lastModified;
       let id = fingerprints.get(fingerprint);
       let uri = id && uris.get(id);
       if (!uri) {
@@ -328,7 +346,12 @@
         uris.set(id, uri);
       }
       files.set(id, file);
-      await deliverBlob(uri, file, req);
+      return { id, uri };
+    }
+
+    async function openFile(file, req) {
+      const identity = registerFile(file);
+      await deliverBlob(identity.uri, file, req);
     }
 
     async function deliverBlob(uri, file, req) {
@@ -511,6 +534,109 @@
       }
     }
 
+    function listedIdentity(parentUri, handle, name, scheme) {
+      const key = parentUri + "\n" + scheme + "\n" + name;
+      let identity = listed.get(key);
+      if (!identity) {
+        const id = randomId();
+        identity = { id, uri: makeUri(scheme, name, id) };
+        listed.set(key, identity);
+      }
+      handles.set(identity.id, handle);
+      uris.set(identity.id, identity.uri);
+      return identity;
+    }
+
+    async function openFolderHandle(handle) {
+      if (!handle || handle.kind !== "directory") throw new Error("The selected item is not a folder.");
+      if (!await permission(handle, "read", true)) throw new Error("Permission to read this folder was not granted.");
+      const name = handle.name || "Folder";
+      const identity = await uriForHandle(handle, name, "webdir");
+      handles.set(identity.id, handle);
+      uris.set(identity.id, identity.uri);
+      await databasePut(identity.id, handle);
+      env.DaphHost.onFolderOpened({ uri: identity.uri, name });
+    }
+
+    async function listFolder(uri) {
+      const parsed = parseFolderUri(uri);
+      if (!parsed) throw new Error("This folder reference is not valid in the website.");
+      const fallback = folders.get(parsed.id);
+      if (fallback) return fallback.entries.map((entry) => Object.assign({}, entry));
+      const handle = await handleFor(parsed.id);
+      if (!handle) throw new Error("This folder is no longer authorized. Choose it again to restore access.");
+      if (!await permission(handle, "read", false)) throw new Error("Folder permission expired. Choose the folder again to restore access.");
+      if (typeof handle.values !== "function") throw new Error("This browser cannot enumerate the selected folder.");
+      const entries = [];
+      for await (const child of handle.values()) {
+        const scheme = child.kind === "directory" ? "webdir" : "webfs";
+        const identity = listedIdentity(uri, child, child.name, scheme);
+        entries.push({ uri: identity.uri, name: child.name, dir: child.kind === "directory" });
+      }
+      return entries;
+    }
+
+    function folderPickerFallback() {
+      const input = env.document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.webkitdirectory = true;
+      input.setAttribute("webkitdirectory", "");
+      input.style.display = "none";
+      env.document.body.appendChild(input);
+      const cleanup = () => input.remove();
+      input.addEventListener("change", async () => {
+        const selected = Array.from(input.files || []);
+        cleanup();
+        if (!selected.length) return;
+        const firstPath = (selected[0].webkitRelativePath || selected[0].name).replace(/\\/g, "/");
+        const rootName = firstPath.split("/").filter(Boolean)[0] || "Folder";
+        const rootId = randomId();
+        const rootUri = makeUri("webdir", rootName, rootId);
+        const rootFolder = { entries: [] };
+        folders.set(rootId, rootFolder);
+        const directories = new Map([["", { id: rootId, folder: rootFolder }]]);
+        for (const file of selected) {
+          const relative = (file.webkitRelativePath || file.name).replace(/\\/g, "/");
+          const parts = relative.split("/").filter(Boolean);
+          if (parts.length && parts[0] === rootName) parts.shift();
+          if (!parts.length) continue;
+          let path = "";
+          let parent = rootFolder;
+          for (let index = 0; index < parts.length - 1; index++) {
+            const name = parts[index];
+            path = path ? path + "/" + name : name;
+            if (!directories.has(path)) {
+              const id = randomId();
+              const child = { entries: [] };
+              folders.set(id, child);
+              directories.set(path, { id, folder: child });
+              parent.entries.push({ uri: makeUri("webdir", name, id), name, dir: true });
+            }
+            parent = directories.get(path).folder;
+          }
+          const identity = registerFile(file);
+          parent.entries.push({ uri: identity.uri, name: file.name, dir: false });
+        }
+        env.DaphHost.onFolderOpened({ uri: rootUri, name: rootName, transient: true });
+      }, { once: true });
+      input.addEventListener("cancel", cleanup, { once: true });
+      input.click();
+    }
+
+    async function openFolder() {
+      if (typeof env.showDirectoryPicker === "function" && env.isSecureContext !== false) {
+        try {
+          const handle = await env.showDirectoryPicker({ mode: "readwrite" });
+          await openFolderHandle(handle);
+        } catch (error) {
+          if (error.name !== "AbortError") throw error;
+        }
+        return;
+      }
+      folderPickerFallback();
+    }
+
     function pickerFallback() {
       const input = env.document.createElement("input");
       input.type = "file";
@@ -551,10 +677,11 @@
           for (const handle of dropped) {
             if (!handle) continue;
             handled = true;
-            if (handle.kind !== "file") {
-              env.DaphHost.onOpenFailed("Folders cannot be opened as text documents. Select files instead.");
+            if (handle.kind === "directory") {
+              await openFolderHandle(handle);
               continue;
             }
+            if (handle.kind !== "file") continue;
             await openHandle(handle);
           }
           if (handled) return;
@@ -588,6 +715,8 @@
       web: true,
       touch: !!(env.matchMedia && env.matchMedia("(pointer: coarse)").matches) || env.navigator.maxTouchPoints > 0,
       openFiles,
+      openFolder,
+      listFolder,
       openDataTransfer,
       chunked: true,
       canChunkSave: true,
@@ -667,6 +796,17 @@
     };
 
     host.ready = (async () => {
+      try {
+        const saved = JSON.parse(env.localStorage.getItem(FOLDER_KEY) || "null");
+        const parsed = saved && parseFolderUri(saved.uri);
+        if (parsed) {
+          const handle = await databaseGet(parsed.id);
+          if (handle) {
+            handles.set(parsed.id, handle);
+            uris.set(parsed.id, saved.uri);
+          }
+        }
+      } catch (_) {}
       for (const item of recentItems) {
         const parsed = parseUri(item.uri);
         if (!parsed) continue;
@@ -681,7 +821,7 @@
     return host;
   }
 
-  const api = { splitText, sniffBom, decodeBytes, decodeBlob, encodeChunks, encodeText, parseUri, createHost };
+  const api = { splitText, sniffBom, decodeBytes, decodeBlob, encodeChunks, encodeText, parseUri, parseFolderUri, createHost };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.DaphWebCodec = api;
   if (typeof window !== "undefined" && typeof document !== "undefined") root.DaphWebHost = createHost(root);
