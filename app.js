@@ -220,6 +220,7 @@
   let suggestAfterDeleteSeq = 0;
   let suggestAfterDeletePending = null;
   let suggestAfterDeleteCache = null;
+  let suggestAfterDeleteForwardKey = null;
   const notifications = [];
 
   function toast(msg, kind) {
@@ -2132,23 +2133,147 @@
     return at >= 0 && line.substring(0, at + cache.triggerCharacter.length) === cache.triggerPrefix ? cache.items : null;
   }
 
-  function reuseSuggestAfterDelete(pending) {
-    if (suggestAfterDeletePending !== pending || pending.ticket !== suggestAfterDeleteSeq) return;
+  function cancelSuggestAfterDeletePending() {
+    const pending = suggestAfterDeletePending;
+    if (pending && pending.cts) pending.cts.cancel();
+    suggestAfterDeletePending = null;
+  }
+
+  function finishSuggestAfterDelete(pending) {
+    if (suggestAfterDeletePending === pending) suggestAfterDeletePending = null;
+  }
+
+  function loadSuggestAfterDeleteApi() {
+    return new Promise((resolve, reject) => {
+      try {
+        require([
+          "vs/editor/contrib/suggest/browser/suggest",
+          "vs/editor/contrib/suggest/browser/suggestModel",
+        ], (suggest, model) => resolve({ suggest, model }), reject);
+      } catch (error) { reject(error); }
+    });
+  }
+
+  function suggestAfterDeleteStillCurrent(pending, model, position, version) {
+    return suggestAfterDeletePending === pending && pending.ticket === suggestAfterDeleteSeq &&
+      editor.getModel() === model && !model.isDisposed() && model.getVersionId() === version &&
+      editor.getPosition() && editor.getPosition().equals(position) && editor.hasWidgetFocus() && !(active && active.huge);
+  }
+
+  // A cold editor has no provider-item cache to reuse. Ask the same pinned
+  // Monaco provider pipeline for a trigger session at the trigger character,
+  // while leaving the real caret and document untouched. The resulting items
+  // are then filtered by Monaco at the actual deleted prefix. This is only a
+  // fallback after the normal request was empty; it is not a second source of
+  // suggestions and it does not bypass the quick-suggestion guards above.
+  async function primeSuggestAfterDelete(pending) {
     const model = editor.getModel();
     const position = editor.getPosition();
-    suggestAfterDeletePending = null;
-    if (!model || !position || model !== pending.model || !position.equals(pending.position) || !editor.hasWidgetFocus() || (active && active.huge)) return;
-    const items = reusableSuggestItems(model, position);
-    if (!items) return;
+    if (!model || !position || !suggestAfterDeleteStillCurrent(pending, model, position, model.getVersionId())) return;
     const controller = editor.getContribution("editor.contrib.suggestController");
-    if (!controller || !controller.model) return;
+    const registry = controller && controller.model && controller.model._languageFeaturesService.completionProvider;
+    if (!registry || typeof registry.all !== "function" || !editor.getOption(monaco.editor.EditorOption.suggestOnTriggerCharacters)) {
+      finishSuggestAfterDelete(pending);
+      return;
+    }
+    pending.priming = true;
+    const providers = Array.from(registry.all(model));
+    const byTrigger = new Map();
+    for (const provider of providers) {
+      for (const ch of provider.triggerCharacters || []) {
+        if (!byTrigger.has(ch)) byTrigger.set(ch, new Set());
+        byTrigger.get(ch).add(provider);
+      }
+    }
+    const before = model.getLineContent(position.lineNumber).substring(0, position.column - 1);
+    let triggerCharacter = "";
+    let triggerAt = -1;
+    let providerFilter = null;
+    byTrigger.forEach((providersForCharacter, ch) => {
+      const at = before.lastIndexOf(ch);
+      if (at > triggerAt) {
+        triggerCharacter = ch;
+        triggerAt = at;
+        providerFilter = providersForCharacter;
+      }
+    });
+    if (!triggerCharacter || triggerAt < 0 || !providerFilter || !providerFilter.size) {
+      finishSuggestAfterDelete(pending);
+      return;
+    }
+    const version = model.getVersionId();
+    let api;
+    try { api = await loadSuggestAfterDeleteApi(); }
+    catch (_) { finishSuggestAfterDelete(pending); return; }
+    if (!suggestAfterDeleteStillCurrent(pending, model, position, version)) return;
+    const snippetProvider = api.suggest.getSnippetSuggestSupport && api.suggest.getSnippetSuggestSupport();
+    if (snippetProvider) providerFilter.add(snippetProvider);
+    const filter = api.model.SuggestModel.createSuggestFilter(editor);
+    const snippetSetting = editor.getOption(monaco.editor.EditorOption.snippetSuggestions);
+    const snippetSortOrder = snippetSetting === "top" ? 0 : snippetSetting === "bottom" ? 2 : 1;
+    const options = new api.suggest.CompletionOptions(snippetSortOrder, filter.itemKind, providerFilter, undefined, filter.showDeprecated);
+    const cts = new monaco.CancellationTokenSource();
+    pending.cts = cts;
+    let result;
+    try {
+      result = await api.suggest.provideSuggestionItems(
+        registry, model, new monaco.Position(position.lineNumber, triggerAt + triggerCharacter.length + 1),
+        options, { triggerKind: 1, triggerCharacter }, cts.token,
+      );
+    } catch (_) {
+      finishSuggestAfterDelete(pending);
+      cts.dispose();
+      return;
+    }
+    cts.dispose();
+    pending.cts = null;
+    if (!suggestAfterDeleteStillCurrent(pending, model, position, version)) {
+      if (result && result.disposable) result.disposable.dispose();
+      return;
+    }
+    if (!result || !result.items.length) {
+      if (result && result.disposable) result.disposable.dispose();
+      finishSuggestAfterDelete(pending);
+      return;
+    }
+    const items = new Map();
+    for (const item of result.items) {
+      if (!items.has(item.provider)) items.set(item.provider, []);
+      items.get(item.provider).push(item);
+    }
+    // SuggestModel owns provider-list disposables for its normal sessions.
+    // Add this manually primed list to the same store so accepting, blurring,
+    // or disposing the editor releases it along with native suggestions.
+    if (controller.model._completionDisposables && result.disposable) controller.model._completionDisposables.add(result.disposable);
+    finishSuggestAfterDelete(pending);
     controller.model.trigger({ auto: true, retrigger: true, completionOptions: { providerItemsToReuse: items } });
     editor.revealPosition(position);
     editor.focus();
   }
 
+  function reuseSuggestAfterDelete(pending) {
+    if (suggestAfterDeletePending !== pending || pending.ticket !== suggestAfterDeleteSeq || pending.priming) return;
+    const model = editor.getModel();
+    const position = editor.getPosition();
+    if (!model || !position || model !== pending.model || !position.equals(pending.position) || !editor.hasWidgetFocus() || (active && active.huge)) {
+      finishSuggestAfterDelete(pending);
+      return;
+    }
+    const items = reusableSuggestItems(model, position);
+    const controller = editor.getContribution("editor.contrib.suggestController");
+    if (!controller || !controller.model) { finishSuggestAfterDelete(pending); return; }
+    if (items) {
+      finishSuggestAfterDelete(pending);
+      controller.model.trigger({ auto: true, retrigger: true, completionOptions: { providerItemsToReuse: items } });
+      editor.revealPosition(position);
+      editor.focus();
+    } else {
+      primeSuggestAfterDelete(pending).catch(() => finishSuggestAfterDelete(pending));
+    }
+  }
+
   function queueSuggestReuse(pending) {
-    if (!pending || pending.starting || suggestAfterDeletePending !== pending) return;
+    if (!pending || pending.starting || pending.priming || suggestAfterDeletePending !== pending) return;
     setTimeout(() => reuseSuggestAfterDelete(pending), 0);
   }
 
@@ -2157,9 +2282,10 @@
     const position = editor.getPosition();
     if (!model || !position || (active && active.huge)) return;
     const ticket = ++suggestAfterDeleteSeq;
+    const version = model.getVersionId();
     const delay = editor.getOption(monaco.editor.EditorOption.quickSuggestionsDelay);
     setTimeout(() => {
-      if (ticket !== suggestAfterDeleteSeq || model.isDisposed() || editor.getModel() !== model) return;
+      if (ticket !== suggestAfterDeleteSeq || model.isDisposed() || editor.getModel() !== model || model.getVersionId() !== version) return;
       const current = editor.getPosition();
       if (!current || !position.equals(current) || (active && active.huge) || !editor.hasWidgetFocus()) return;
 
@@ -2298,11 +2424,21 @@
     }
     editor.onDidChangeModel(() => {
       suggestAfterDeleteCache = null;
-      suggestAfterDeletePending = null;
+      cancelSuggestAfterDeletePending();
       suggestAfterDeleteSeq++;
     });
+    editor.onDidChangeModelContent(() => {
+      const forwardDelete = suggestAfterDeleteForwardKey !== null;
+      suggestAfterDeleteForwardKey = null;
+      cancelSuggestAfterDeletePending();
+      suggestAfterDeleteSeq++;
+      // Forward Delete can leave the caret at the same position, in which
+      // case Monaco need not emit a cursor-selection event. The key marker
+      // makes this path specific to Delete rather than arbitrary model edits.
+      if (forwardDelete && editor.getSelection() && editor.getSelection().isEmpty()) scheduleSuggestAfterDelete();
+    });
     editor.onDidChangeCursorSelection((event) => {
-      suggestAfterDeletePending = null;
+      cancelSuggestAfterDeletePending();
       if (event.source === "deleteLeft" || event.source === "deleteRight") suggestAfterDeleteSeq++;
       updateStatus();
       const sel = editor.getSelection();
@@ -2313,12 +2449,22 @@
     });
     editor.onDidScrollChange(() => { gestures && gestures.placeHandles(); placeSelbar(); });
     editor.onDidChangeModelOptions(() => updateStatus());
-    editor.onDidChangeModelLanguage(() => { suggestAfterDeleteCache = null; suggestAfterDeletePending = null; suggestAfterDeleteSeq++; updateStatus(); renderTabs(); });
+    editor.onDidChangeModelLanguage(() => { suggestAfterDeleteCache = null; cancelSuggestAfterDeletePending(); suggestAfterDeleteSeq++; updateStatus(); renderTabs(); });
     editor.onDidFocusEditorText(() => { editorFocused = true; setKbdState(); });
-    editor.onDidBlurEditorText(() => { editorFocused = false; setTimeout(setKbdState, 120); });
+    editor.onDidBlurEditorText(() => { editorFocused = false; cancelSuggestAfterDeletePending(); setTimeout(setKbdState, 120); });
     editor.onDidChangeConfiguration(() => { gestures && gestures.placeHandles(); });
     editor.onKeyDown((event) => {
-      if (event.browserEvent.key === "Escape") { suggestAfterDeletePending = null; suggestAfterDeleteSeq++; }
+      const key = event.browserEvent.key;
+      if (key === "Delete") {
+        const marker = {};
+        suggestAfterDeleteForwardKey = marker;
+        // Monaco applies the edit synchronously after keydown. Clear an
+        // unconsumed marker so a later programmatic edit cannot inherit it.
+        setTimeout(() => { if (suggestAfterDeleteForwardKey === marker) suggestAfterDeleteForwardKey = null; }, 0);
+      } else if (key !== "Backspace") {
+        suggestAfterDeleteForwardKey = null;
+      }
+      if (key === "Escape") { cancelSuggestAfterDeletePending(); suggestAfterDeleteSeq++; }
       if (selbarKind) hideSelbar();
       touchSelection = false;
     });
