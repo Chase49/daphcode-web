@@ -1677,6 +1677,11 @@
       const t = e.target;
       if (!kbdForcing && t && t.tagName === "TEXTAREA" && t.classList.contains("inputarea")) setQuiet(t);
     }, true);
+    if (Host.web) {
+      container.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && editor.hasTextFocus() && container.querySelector(".suggest-widget.visible")) editor.trigger("daphcode.shiftEnter", "hideSuggestWidget", null);
+      }, true);
+    }
     if (Host.web && Host.touch) {
       container.addEventListener("pointerup", (e) => {
         if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
