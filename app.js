@@ -1820,6 +1820,18 @@
   function wireBrowser() {
     if (!Host.web) return;
     const tabStrip = $("#tabs");
+    tabStrip.addEventListener("wheel", (e) => {
+      const max = tabStrip.scrollWidth - tabStrip.clientWidth;
+      if (max <= 0) return;
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? tabStrip.clientWidth : 1;
+      const dx = e.deltaX * unit, dy = e.deltaY * unit;
+      const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+      if (!delta) return;
+      const next = Math.max(0, Math.min(max, tabStrip.scrollLeft + delta));
+      if (next === tabStrip.scrollLeft) return;
+      e.preventDefault();
+      tabStrip.scrollLeft = next;
+    }, { passive: false });
     tabStrip.addEventListener("contextmenu", (e) => {
       if (!matchMedia("(pointer: fine)").matches) return;
       const row = e.target.closest(".tab");
