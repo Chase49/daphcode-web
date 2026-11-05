@@ -545,7 +545,7 @@
       diagWorker.onerror = () => {
         diagWorkerFailed = true;
         diagWorker = null;
-        for (const [id, p] of diagPending) diagDone(id, self.DaphDiag ? DaphDiag.check(p.lang, p.t.model.getValue(), { native: p.lang === "css" }) : []);
+        for (const [id, p] of diagPending) diagDone(id, self.DaphDiag ? DaphDiag.check(p.lang, p.t.model.getValue(), { native: p.lang === "css" || p.lang === "typescript" }) : []);
         for (const id of highlightPending.keys()) highlightDone(id, null, true);
       };
     } catch (_) { diagWorkerFailed = true; diagWorker = null; }
@@ -590,8 +590,8 @@
     const text = t.model.getValue();
     if (lang === "xml") { let ms = []; try { ms = xmlDiagnostics(text); } catch (_) {} diagDone(id, ms); return; }
     const w = diagWorkerGet();
-    if (w) w.postMessage({ id, lang, text, native: lang === "css" });
-    else diagDone(id, DaphDiag.check(lang, text, { native: lang === "css" }));
+    if (w) w.postMessage({ id, lang, text, native: lang === "css" || lang === "typescript" });
+    else diagDone(id, DaphDiag.check(lang, text, { native: lang === "css" || lang === "typescript" }));
   }
 
   function onContentChanged(t) {

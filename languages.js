@@ -23,6 +23,11 @@
     sql: ["codicon-database", "#f55385"],
     rust: ["codicon-gear", "#dea584"],
     go: ["codicon-symbol-method", "#519aba"],
+    "objective-c": ["codicon-symbol-class", "#438eff"],
+    dart: ["codicon-symbol-interface", "#40c4ff"],
+    php: ["codicon-symbol-variable", "#a074c4"],
+    ruby: ["codicon-ruby", "#cc3e44"],
+    swift: ["codicon-flame", "#f05138"],
     plaintext: ["codicon-file", "#cccccc"],
   };
 

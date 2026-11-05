@@ -955,11 +955,11 @@
     let skip;
     if (lang === "typescript") {
       const result = typescriptCheck(text);
-      markers = markers.concat(result.markers);
+      if (!(options && options.native)) markers = markers.concat(result.markers);
       skip = result.skip;
     }
     markers = markers.concat(unusedCheck(text, lang, counts, skip, baseMarkers));
-    markers = markers.concat(undefinedOutputCheck(text, lang, counts));
+    if (lang !== "typescript" || !(options && options.native)) markers = markers.concat(undefinedOutputCheck(text, lang, counts));
     if (lang === "shell") markers = markers.concat(shellCheck(text));
     if (lang === "go") markers = markers.concat(goCheck(text));
     if (lang === "java") markers = markers.concat(javaCheck(text));
