@@ -218,6 +218,8 @@
   let imeFromHost = false;
   let editorFocused = false;
   let suggestAfterDeleteSeq = 0;
+  let suggestAfterDeletePending = null;
+  let suggestAfterDeleteCache = null;
   const notifications = [];
 
   function toast(msg, kind) {
@@ -2113,8 +2115,43 @@
   }
 
   // Monaco restarts quick suggestions for typed text, but not after a closed
-  // suggestion session is deleted with Backspace/Delete. Recheck the same
-  // editor/token options before asking the public suggest action to reopen.
+  // suggestion session is deleted with Backspace/Delete. Keep one compatible
+  // provider-item set as a fallback: trigger-character providers often need
+  // the original item set (HTML doctype is an example) when the caret returns
+  // to an intermediate prefix. Fresh suggestions always get the first chance.
+  function reusableSuggestItems(model, position) {
+    const cache = suggestAfterDeleteCache;
+    if (!cache || cache.model !== model || cache.line !== position.lineNumber) return null;
+    const line = model.getLineContent(position.lineNumber);
+    if (cache.lineText.startsWith(line)) return cache.items;
+    // A cached trigger-character session may have started at a shorter prefix
+    // (for example < before an accepted doctype snippet). Only extend that
+    // exact trigger prefix; never reuse an unrelated line's items.
+    if (!cache.triggerCharacter || !line.startsWith(cache.lineText)) return null;
+    const at = line.lastIndexOf(cache.triggerCharacter);
+    return at >= 0 && line.substring(0, at + cache.triggerCharacter.length) === cache.triggerPrefix ? cache.items : null;
+  }
+
+  function reuseSuggestAfterDelete(pending) {
+    if (suggestAfterDeletePending !== pending || pending.ticket !== suggestAfterDeleteSeq) return;
+    const model = editor.getModel();
+    const position = editor.getPosition();
+    suggestAfterDeletePending = null;
+    if (!model || !position || model !== pending.model || !position.equals(pending.position) || !editor.hasWidgetFocus() || (active && active.huge)) return;
+    const items = reusableSuggestItems(model, position);
+    if (!items) return;
+    const controller = editor.getContribution("editor.contrib.suggestController");
+    if (!controller || !controller.model) return;
+    controller.model.trigger({ auto: true, retrigger: true, completionOptions: { providerItemsToReuse: items } });
+    editor.revealPosition(position);
+    editor.focus();
+  }
+
+  function queueSuggestReuse(pending) {
+    if (!pending || pending.starting || suggestAfterDeletePending !== pending) return;
+    setTimeout(() => reuseSuggestAfterDelete(pending), 0);
+  }
+
   function scheduleSuggestAfterDelete() {
     const model = editor.getModel();
     const position = editor.getPosition();
@@ -2151,7 +2188,10 @@
         const type = tokens.getStandardTokenType(tokens.findTokenIndexAtOffset(Math.max(current.column - 2, 0)));
         if (!enabled(type === 1 ? comments : type === 2 ? strings : other)) return;
       }
+      const pending = { ticket, model, position: current, starting: true };
+      suggestAfterDeletePending = pending;
       editor.trigger("daphcode.delete", "editor.action.triggerSuggest", { auto: true });
+      pending.starting = false;
     }, delay);
   }
 
@@ -2226,7 +2266,44 @@
     }
     self.__editor = editor;
     self.__monaco = monaco;
+    const suggestController = editor.getContribution("editor.contrib.suggestController");
+    if (suggestController && suggestController.model) {
+      suggestController.model.onDidSuggest((event) => {
+        const items = event.completionModel.getItemsByProvider();
+        let count = 0;
+        items.forEach((entries) => { count += entries.length; });
+        const model = editor.getModel();
+        const position = editor.getPosition();
+        if (count && model && position && !(active && active.huge)) {
+          let triggerCharacter = "";
+          let triggerPrefix = "";
+          const options = event.triggerOptions || {};
+          if (options.triggerCharacter) {
+            const before = model.getLineContent(position.lineNumber).substring(0, position.column - 1);
+            const at = before.lastIndexOf(options.triggerCharacter);
+            if (at >= 0) {
+              triggerCharacter = options.triggerCharacter;
+              triggerPrefix = before.substring(0, at + triggerCharacter.length);
+            }
+          }
+          suggestAfterDeleteCache = { model, line: position.lineNumber, lineText: model.getLineContent(position.lineNumber), items, triggerCharacter, triggerPrefix };
+        }
+        const pending = suggestAfterDeletePending;
+        if (pending && pending.model === model && position && pending.position.equals(position)) {
+          if (count) suggestAfterDeletePending = null;
+          else queueSuggestReuse(pending);
+        }
+      });
+      suggestController.model.onDidCancel(() => queueSuggestReuse(suggestAfterDeletePending));
+    }
+    editor.onDidChangeModel(() => {
+      suggestAfterDeleteCache = null;
+      suggestAfterDeletePending = null;
+      suggestAfterDeleteSeq++;
+    });
     editor.onDidChangeCursorSelection((event) => {
+      suggestAfterDeletePending = null;
+      if (event.source === "deleteLeft" || event.source === "deleteRight") suggestAfterDeleteSeq++;
       updateStatus();
       const sel = editor.getSelection();
       if (sel && sel.isEmpty()) touchSelection = false;
@@ -2236,11 +2313,15 @@
     });
     editor.onDidScrollChange(() => { gestures && gestures.placeHandles(); placeSelbar(); });
     editor.onDidChangeModelOptions(() => updateStatus());
-    editor.onDidChangeModelLanguage(() => { updateStatus(); renderTabs(); });
+    editor.onDidChangeModelLanguage(() => { suggestAfterDeleteCache = null; suggestAfterDeletePending = null; suggestAfterDeleteSeq++; updateStatus(); renderTabs(); });
     editor.onDidFocusEditorText(() => { editorFocused = true; setKbdState(); });
     editor.onDidBlurEditorText(() => { editorFocused = false; setTimeout(setKbdState, 120); });
     editor.onDidChangeConfiguration(() => { gestures && gestures.placeHandles(); });
-    editor.onKeyDown(() => { if (selbarKind) hideSelbar(); touchSelection = false; });
+    editor.onKeyDown((event) => {
+      if (event.browserEvent.key === "Escape") { suggestAfterDeletePending = null; suggestAfterDeleteSeq++; }
+      if (selbarKind) hideSelbar();
+      touchSelection = false;
+    });
     monaco.editor.onDidChangeMarkers(() => updateMarkers());
     gestures = DaphGestures.attach(monaco, editor, $("#editor"), { a: $("#handle-a"), b: $("#handle-b") }, {
       getFont: () => settings.fontSize,
