@@ -217,6 +217,7 @@
   let imeVisible = false;
   let imeFromHost = false;
   let editorFocused = false;
+  let suggestAfterDeleteSeq = 0;
   const notifications = [];
 
   function toast(msg, kind) {
@@ -2111,6 +2112,49 @@
     });
   }
 
+  // Monaco restarts quick suggestions for typed text, but not after a closed
+  // suggestion session is deleted with Backspace/Delete. Recheck the same
+  // editor/token options before asking the public suggest action to reopen.
+  function scheduleSuggestAfterDelete() {
+    const model = editor.getModel();
+    const position = editor.getPosition();
+    if (!model || !position || (active && active.huge)) return;
+    const ticket = ++suggestAfterDeleteSeq;
+    const delay = editor.getOption(monaco.editor.EditorOption.quickSuggestionsDelay);
+    setTimeout(() => {
+      if (ticket !== suggestAfterDeleteSeq || model.isDisposed() || editor.getModel() !== model) return;
+      const current = editor.getPosition();
+      if (!current || !position.equals(current) || (active && active.huge) || !editor.hasWidgetFocus()) return;
+
+      // Do not open a list on an empty line or after whitespace. Punctuation
+      // is intentionally allowed: HTML's useful prefix after deletion is <.
+      const before = model.getLineContent(current.lineNumber).substring(0, current.column - 1);
+      if (!before || /\s$/.test(before)) return;
+      const word = model.getWordAtPosition(current);
+      if (word && word.endColumn === current.column && !isNaN(Number(word.word))) return;
+
+      const quick = editor.getOption(monaco.editor.EditorOption.quickSuggestions);
+      const enabled = (value) => value === true || value === "on";
+      const other = quick === true ? "on" : quick && quick.other;
+      const comments = quick === true ? "on" : quick && quick.comments;
+      const strings = quick === true ? "on" : quick && quick.strings;
+      if (!enabled(other) && !enabled(comments) && !enabled(strings)) return;
+
+      const suggest = editor.getOption(monaco.editor.EditorOption.suggest);
+      if (suggest && suggest.snippetsPreventQuickSuggestions) {
+        const snippets = editor.getContribution("snippetController2");
+        if (snippets && snippets.isInSnippet()) return;
+      }
+      if (!enabled(other) || !enabled(comments) || !enabled(strings)) {
+        model.tokenization.tokenizeIfCheap(current.lineNumber);
+        const tokens = model.tokenization.getLineTokens(current.lineNumber);
+        const type = tokens.getStandardTokenType(tokens.findTokenIndexAtOffset(Math.max(current.column - 2, 0)));
+        if (!enabled(type === 1 ? comments : type === 2 ? strings : other)) return;
+      }
+      editor.trigger("daphcode.delete", "editor.action.triggerSuggest", { auto: true });
+    }, delay);
+  }
+
   function createEditor() {
     editor = monaco.editor.create($("#editor"), {
       model: null,
@@ -2182,12 +2226,13 @@
     }
     self.__editor = editor;
     self.__monaco = monaco;
-    editor.onDidChangeCursorSelection(() => {
+    editor.onDidChangeCursorSelection((event) => {
       updateStatus();
       const sel = editor.getSelection();
       if (sel && sel.isEmpty()) touchSelection = false;
       gestures && gestures.placeHandles();
       if (selbarKind && selbarKind !== "caret") placeSelbar();
+      if ((event.source === "deleteLeft" || event.source === "deleteRight") && event.selection.isEmpty()) scheduleSuggestAfterDelete();
     });
     editor.onDidScrollChange(() => { gestures && gestures.placeHandles(); placeSelbar(); });
     editor.onDidChangeModelOptions(() => updateStatus());
