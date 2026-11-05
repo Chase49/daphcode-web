@@ -1672,10 +1672,23 @@
     setQuiet(editorTextarea());
     // Whenever the editor text loses focus, the next programmatic refocus must be quiet.
     // Delegated, because Monaco may recreate its textarea (e.g. on setModel).
-    editor.getContainerDomNode().addEventListener("focusout", (e) => {
+    const container = editor.getContainerDomNode();
+    container.addEventListener("focusout", (e) => {
       const t = e.target;
       if (!kbdForcing && t && t.tagName === "TEXTAREA" && t.classList.contains("inputarea")) setQuiet(t);
     }, true);
+    if (Host.web && Host.touch) {
+      container.addEventListener("pointerup", (e) => {
+        if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+        const row = e.target && e.target.closest && e.target.closest(".suggest-widget .monaco-list-row");
+        if (!row || !container.contains(row)) return;
+        const ta = editorTextarea();
+        if (!ta) return;
+        setTimeout(() => {
+          if (ta.isConnected && editorTextarea() === ta && ta.classList.contains("ime-input")) ta.dispatchEvent(new Event("-monaco-textarea-synthetic-tap"));
+        }, 0);
+      }, true);
+    }
   }
 
   const ACC = [
