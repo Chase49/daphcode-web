@@ -545,7 +545,7 @@
       diagWorker.onerror = () => {
         diagWorkerFailed = true;
         diagWorker = null;
-        for (const [id, p] of diagPending) diagDone(id, self.DaphDiag ? DaphDiag.check(p.lang, p.t.model.getValue()) : []);
+        for (const [id, p] of diagPending) diagDone(id, self.DaphDiag ? DaphDiag.check(p.lang, p.t.model.getValue(), { native: p.lang === "css" }) : []);
         for (const id of highlightPending.keys()) highlightDone(id, null, true);
       };
     } catch (_) { diagWorkerFailed = true; diagWorker = null; }
@@ -590,8 +590,8 @@
     const text = t.model.getValue();
     if (lang === "xml") { let ms = []; try { ms = xmlDiagnostics(text); } catch (_) {} diagDone(id, ms); return; }
     const w = diagWorkerGet();
-    if (w) w.postMessage({ id, lang, text });
-    else diagDone(id, DaphDiag.check(lang, text));
+    if (w) w.postMessage({ id, lang, text, native: lang === "css" });
+    else diagDone(id, DaphDiag.check(lang, text, { native: lang === "css" }));
   }
 
   function onContentChanged(t) {
@@ -2634,6 +2634,11 @@
     require.config({ paths: { vs: vsBase } });
     require(["vs/editor/editor.main"], (m) => {
       monaco = m || self.monaco;
+      const cssDefaults = monaco.languages.css && monaco.languages.css.cssDefaults;
+      if (cssDefaults) {
+        const current = typeof cssDefaults.getDiagnosticsOptions === "function" ? cssDefaults.getDiagnosticsOptions() : {};
+        cssDefaults.setDiagnosticsOptions(Object.assign({}, current, { validate: true, lint: Object.assign({}, current.lint, { unknownProperties: "error" }) }));
+      }
       fetch("vs/VENDOR_MANIFEST.json").then((r) => r.json()).then((j) => { self.__monacoVersion = j.monaco; }).catch(() => {});
       L.build(monaco);
       defineTheme();

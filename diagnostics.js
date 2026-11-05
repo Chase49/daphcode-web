@@ -450,7 +450,8 @@
       for (const S of stmts) {
         for (const t of S) {
           if (t.t !== "NAME" || PY_KW.has(t.v) || nonLoad.has(t) || bound.has(t.v) || PY_BUILTINS.has(t.v) || PY_SOFT.has(t.v)) continue;
-          sink.add(WARNING, '"' + t.v + '" is not defined', t.s, t.e, "reportUndefinedVariable");
+          const directPrint = S.length === 4 && S[0].v === "print" && S[1].v === "(" && S[2] === t && S[3].v === ")";
+          sink.add(directPrint ? ERROR : WARNING, '"' + t.v + '" is not defined', t.s, t.e, "reportUndefinedVariable");
           reported.add(t.v);
         }
       }
@@ -619,14 +620,365 @@
     function prevNumStart(k) { let j = k - 1; while (j > 0 && /[\w']/.test(text[j - 1])) j--; return text[j] || ""; }
   }
 
-  function check(lang, text) {
-    if (lang === "python") return pyCheck(text);
-    if (C_LANGS[lang]) return cCheck(text, lang);
-    return [];
+  function maskSource(text, lang, keepStrings) {
+    const out = text.split("");
+    const n = text.length;
+    const hash = lang === "python" || lang === "shell" || lang === "ruby" || lang === "php";
+    const slash = lang !== "python" && lang !== "shell" && lang !== "ruby";
+    const blank = (from, to) => {
+      for (let k = from; k < to; k++) if (text[k] !== "\n" && text[k] !== "\r") out[k] = " ";
+    };
+    let i = 0;
+    while (i < n) {
+      const c = text[i];
+      if (slash && c === "/" && text[i + 1] === "/") {
+        const e = lineEnd(text, i);
+        blank(i, e);
+        i = e;
+        continue;
+      }
+      if (hash && c === "#") {
+        const e = lineEnd(text, i);
+        blank(i, e);
+        i = e;
+        continue;
+      }
+      if (slash && c === "/" && text[i + 1] === "*") {
+        const x = text.indexOf("*/", i + 2);
+        const e = x < 0 ? n : x + 2;
+        blank(i, e);
+        i = e;
+        continue;
+      }
+      const triple = lang === "python" && (c === "\"" || c === "'") && text.startsWith(c + c + c, i);
+      if (c === "\"" || c === "'" || (c === "`" && (lang === "javascript" || lang === "typescript" || lang === "go"))) {
+        let k = i + (triple ? 3 : 1);
+        let closed = false;
+        while (k < n) {
+          if (text[k] === "\\" && lang !== "c") { k += 2; continue; }
+          if (triple && text.startsWith(c + c + c, k)) { k += 3; closed = true; break; }
+          if (!triple && text[k] === c) {
+            if ((lang === "csharp" || lang === "python") && text[k + 1] === c) { k += 2; continue; }
+            k++;
+            closed = true;
+            break;
+          }
+          if (!triple && text[k] === "\n" && lang !== "javascript" && lang !== "typescript" && lang !== "go") break;
+          k++;
+        }
+        if (!closed && !triple) k = Math.min(k, lineEnd(text, i));
+        if (!keepStrings) blank(i, k);
+        i = k;
+        continue;
+      }
+      i++;
+    }
+    return out.join("");
   }
-  const supports = (lang) => lang === "python" || !!C_LANGS[lang];
 
-  const api = { check, supports, tokenizePython: (text) => ({ tokens: pyTokenize(text, { add() {} }, true), starts: lineIndex(text) }), languages: ["python"].concat(Object.keys(C_LANGS)) };
+  function identifierCounts(text, lang) {
+    const counts = Object.create(null);
+    const visible = maskSource(text, lang, true);
+    const re = /[A-Za-z_][A-Za-z0-9_]*/g;
+    let m;
+    while ((m = re.exec(visible))) counts[m[0]] = (counts[m[0]] || 0) + 1;
+    return counts;
+  }
+
+  function unusedCheck(text, lang, counts, skipNames, baseMarkers) {
+    if (lang === "go" || lang === "html" || lang === "css") return [];
+    const sink = makeSink(text, "DaphCode");
+    const visible = maskSource(text, lang, false);
+    const occupied = new Set((baseMarkers || []).map((m) => m.startLineNumber));
+    const modulePython = lang === "python" && /^(?:async\s+def|def|class)\s/m.test(visible);
+    const typed = /^(\s*)(?:(?:public|private|protected|internal|static|final|const|volatile|unsigned|signed|readonly|late)\s+)*([A-Za-z_][\w]*(?:<[^;=]+>)?(?:\[\])*\s*(?:\*+\s*)?)([A-Za-z_]\w*)\s*(?:\[\])*\s*=\s*(?![=])/;
+    const patterns = [];
+    if (lang === "python" || lang === "ruby") patterns.push([/^(\s*)([A-Za-z_]\w*)\s*=\s*(?![=])/, 2]);
+    else if (lang === "shell") patterns.push([/^(\s*)([A-Za-z_]\w*)=(?!=)/, 2]);
+    else if (lang === "php") patterns.push([/^(\s*)\$([A-Za-z_]\w*)\s*=\s*(?![=>])/, 2]);
+    else {
+      if (lang === "javascript" || lang === "typescript") patterns.push([/^(\s*)(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?![=])/, 2]);
+      if (lang === "kotlin" || lang === "swift") patterns.push([/^(\s*)(?:val|var|let)\s+([A-Za-z_]\w*)\s*(?::[^=]+)?=\s*(?![=])/, 2]);
+      if (lang === "rust") patterns.push([/^(\s*)let\s+(?:mut\s+)?([A-Za-z_]\w*)\s*(?::[^=]+)?=\s*(?![=])/, 2]);
+      if (lang === "dart") patterns.push([/^(\s*)(?:var|final|const)\s+(?:[A-Za-z_]\w*\s+)?([A-Za-z_]\w*)\s*=\s*(?![=])/, 2]);
+      if (lang !== "javascript" && lang !== "typescript" && lang !== "kotlin" && lang !== "swift" && lang !== "rust") patterns.push([typed, 3]);
+    }
+    const excludedTypes = new Set(["return", "throw", "new", "using", "else", "case", "let", "val", "var", "const"]);
+    let offset = 0, lineNumber = 1;
+    while (offset <= visible.length) {
+      const end = visible.indexOf("\n", offset);
+      const e = end < 0 ? visible.length : end;
+      const line = visible.slice(offset, e);
+      for (const [re, group] of patterns) {
+        const m = re.exec(line);
+        if (!m) continue;
+        const name = m[group];
+        if (group === 3 && excludedTypes.has(m[2].trim())) continue;
+        if (!name || name.startsWith("_") || (skipNames && skipNames.has(name)) || occupied.has(lineNumber) || counts[name] !== 1) continue;
+        if (modulePython && lang === "python" && !/^\s/.test(line)) continue;
+        const within = m[0].lastIndexOf(name);
+        const start = offset + within;
+        sink.add(WARNING, '"' + name + '" is assigned a value but never used', start, start + name.length, "unusedVariable");
+        break;
+      }
+      if (end < 0) break;
+      offset = e + 1;
+      lineNumber++;
+    }
+    return sink.out;
+  }
+
+  function undefinedOutputCheck(text, lang, counts) {
+    if (lang === "python" || lang === "html" || lang === "css" || lang === "shell") return [];
+    const sink = makeSink(text, "DaphCode");
+    const visible = maskSource(text, lang, false);
+    const reported = new Set();
+    const globals = new Set(["this", "self", "super", "nil", "null", "true", "false", "undefined", "NaN", "Infinity", "ARGV", "ENV", "__FILE__", "__LINE__"]);
+    const add = (name, start) => {
+      const key = name + ":" + start;
+      if (reported.has(key) || globals.has(name) || counts[name] !== 1) return;
+      reported.add(key);
+      sink.add(ERROR, '"' + name + '" is not defined', start, start + name.length, "undefinedVariable");
+    };
+    const direct = /\b(?:console\s*\.\s*log|System\s*\.\s*out\s*\.\s*println|Console\s*\.\s*WriteLine|fmt\s*\.\s*Println|print|println|puts|echo)\s*(?:\(\s*)?\$?([A-Za-z_][A-Za-z0-9_]*)\s*(?=[),;]|\r?$)/gm;
+    let m;
+    while ((m = direct.exec(visible))) {
+      const start = m.index + m[0].lastIndexOf(m[1]);
+      add(m[1], start);
+    }
+    const printf = /\bprintf\s*\(\s*[^,()]*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?=[,)])/g;
+    while ((m = printf.exec(visible))) add(m[1], m.index + m[0].lastIndexOf(m[1]));
+    const rust = /\b(?:println|print|eprintln|format)!\s*\(\s*[^,;()]*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?=[,)])/g;
+    while ((m = rust.exec(visible))) add(m[1], m.index + m[0].lastIndexOf(m[1]));
+    const cout = /\bstd\s*::\s*cout([^;]*);/g;
+    while ((m = cout.exec(visible))) {
+      const base = m.index + m[0].indexOf(m[1]);
+      const insertion = /<<\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+      let x;
+      while ((x = insertion.exec(m[1]))) add(x[1], base + x.index + x[0].lastIndexOf(x[1]));
+    }
+    return sink.out;
+  }
+
+  function shellCheck(text) {
+    const sink = makeSink(text, "Shell");
+    const visible = maskSource(text, "shell", false);
+    const re = /\b(?:if|fi|for|while|until|select|done|case|esac)\b/g;
+    const stack = [];
+    const closes = { fi: ["if", "if"], done: ["loop", "done"], esac: ["case", "case"] };
+    let m;
+    while ((m = re.exec(visible))) {
+      const word = m[0];
+      if (word === "if" || word === "case") stack.push({ word, kind: word, start: m.index });
+      else if (word === "for" || word === "while" || word === "until" || word === "select") stack.push({ word, kind: "loop", start: m.index });
+      else {
+        const expected = closes[word];
+        const top = stack[stack.length - 1];
+        if (!top || top.kind !== expected[0]) sink.add(ERROR, "Unexpected '" + word + "'", m.index, m.index + word.length, "shellBlock");
+        else stack.pop();
+      }
+    }
+    for (const item of stack) {
+      const closer = item.kind === "if" ? "fi" : item.kind === "case" ? "esac" : "done";
+      sink.add(ERROR, "Missing '" + closer + "' for this '" + item.word + "'", item.start, item.start + item.word.length, "shellBlock");
+    }
+    return sink.out;
+  }
+
+  function goCheck(text) {
+    const sink = makeSink(text, "Go");
+    const visible = maskSource(text, "go", false);
+    const states = new Map();
+    let offset = 0;
+    let depth = 0;
+    while (offset <= visible.length) {
+      const end = visible.indexOf("\n", offset);
+      const e = end < 0 ? visible.length : end;
+      const line = visible.slice(offset, e);
+      const assignment = /^(\s*)([A-Za-z_]\w*)\s*(:?=)\s*(?!=)/.exec(line);
+      const readText = assignment ? line.slice(assignment[0].length) : line;
+      for (const [key, state] of states) {
+        const name = key.slice(key.indexOf(":") + 1);
+        if (new RegExp("\\b" + name + "\\b").test(readText)) state.unread = false;
+      }
+      if (assignment) {
+        const name = assignment[2];
+        const key = depth + ":" + name;
+        const previous = states.get(key);
+        const start = offset + assignment[0].lastIndexOf(name);
+        if (previous && previous.unread) sink.add(WARNING, 'Previous assignment to "' + name + '" is never used', start, start + name.length, "ineffectualAssignment");
+        states.set(key, { unread: true });
+      }
+      for (const c of line) {
+        if (c === "{") depth++;
+        else if (c === "}") depth = Math.max(0, depth - 1);
+      }
+      if (end < 0) break;
+      offset = e + 1;
+    }
+    return sink.out;
+  }
+
+  function editDistance(a, b) {
+    const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      let diagonal = row[0];
+      row[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+        const old = row[j];
+        row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+        diagonal = old;
+      }
+    }
+    return row[b.length];
+  }
+
+  const CSS_PROPERTIES = new Set(("align-items align-content animation appearance aspect-ratio background background-color background-image background-position background-repeat background-size border border-bottom border-collapse border-color border-left border-radius border-right border-style border-top border-width bottom box-shadow box-sizing color column-gap content cursor display filter flex flex-basis flex-direction flex-flow flex-grow flex-shrink flex-wrap float font font-family font-size font-style font-weight gap grid grid-area grid-column grid-row grid-template-columns grid-template-rows height inset justify-content justify-items left letter-spacing line-height list-style margin margin-bottom margin-left margin-right margin-top max-height max-width min-height min-width object-fit opacity order outline overflow overflow-x overflow-y padding padding-bottom padding-left padding-right padding-top pointer-events position right row-gap text-align text-decoration text-overflow text-shadow text-transform top transform transition vertical-align visibility white-space width word-break z-index").split(" "));
+
+  function cssCheck(text, nativeService) {
+    const sink = makeSink(text, "CSS");
+    const visible = maskSource(text, "css", false);
+    let offset = 0, depth = 0;
+    while (offset <= visible.length) {
+      const end = visible.indexOf("\n", offset);
+      const e = end < 0 ? visible.length : end;
+      const line = visible.slice(offset, e);
+      const important = /!important/gi;
+      let m;
+      while ((m = important.exec(line))) sink.add(WARNING, 'Avoid "!important" when possible', offset + m.index, offset + m.index + m[0].length, "importantDeclaration");
+      if (depth > 0) {
+        const declaration = /^(\s*)([A-Za-z-][A-Za-z0-9-]*)\s*:/.exec(line);
+        if (declaration && !declaration[2].startsWith("--") && !declaration[2].startsWith("-")) {
+          const property = declaration[2].toLowerCase();
+          if (!nativeService && !CSS_PROPERTIES.has(property)) {
+            let nearest = "", distance = 2;
+            for (const candidate of CSS_PROPERTIES) {
+              const d = editDistance(property, candidate);
+              if (d < distance) { distance = d; nearest = candidate; }
+            }
+            if (nearest && distance === 1) {
+              const start = offset + declaration[0].lastIndexOf(declaration[2]);
+              sink.add(ERROR, 'Unknown property: "' + declaration[2] + '". Did you mean "' + nearest + '"?', start, start + declaration[2].length, "unknownProperty");
+            }
+          }
+        }
+      }
+      for (const c of line) {
+        if (c === "{") depth++;
+        else if (c === "}") depth = Math.max(0, depth - 1);
+      }
+      if (end < 0) break;
+      offset = e + 1;
+    }
+    return sink.out;
+  }
+
+  function htmlCheck(text) {
+    const sink = makeSink(text, "HTML");
+    const chars = text.split("");
+    const blank = (from, to) => {
+      for (let i = from; i < to; i++) if (text[i] !== "\n" && text[i] !== "\r") chars[i] = " ";
+    };
+    let m;
+    const comments = /<!--[\s\S]*?-->/g;
+    while ((m = comments.exec(text))) blank(m.index, m.index + m[0].length);
+    let visible = chars.join("");
+    const embedded = /(<(?:script|style)\b[^>]*>)([\s\S]*?)(<\/(?:script|style)\s*>)/gi;
+    while ((m = embedded.exec(visible))) blank(m.index + m[1].length, m.index + m[1].length + m[2].length);
+    visible = chars.join("");
+    const ids = new Map();
+    const tags = /<\s*([A-Za-z][\w:-]*)([^<>]*?)>/g;
+    while ((m = tags.exec(visible))) {
+      const tag = m[1].toLowerCase();
+      const attrs = m[2];
+      const tagStart = m.index + m[0].indexOf(m[1]);
+      if (tag === "img" && !/(?:^|\s)alt(?:\s*=|\s|$)/i.test(attrs)) sink.add(WARNING, 'Image is missing an "alt" attribute', tagStart, tagStart + m[1].length, "missingAlt");
+      const id = /(?:^|\s)id\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(attrs);
+      if (!id) continue;
+      const value = id[1] != null ? id[1] : id[2] != null ? id[2] : id[3];
+      if (!value) continue;
+      const relative = id.index + id[0].lastIndexOf(value);
+      const start = m.index + m[0].indexOf(attrs) + relative;
+      if (ids.has(value)) sink.add(ERROR, 'Duplicate id "' + value + '"', start, start + value.length, "duplicateId");
+      else ids.set(value, start);
+    }
+    return sink.out;
+  }
+
+  function javaCheck(text) {
+    const sink = makeSink(text, "Java");
+    const visible = maskSource(text, "java", false);
+    const re = /\bnew\s+Thread\s*\([^()]*\)\s*\.\s*(stop|suspend|resume)\s*\(\s*\)/g;
+    let m;
+    while ((m = re.exec(visible))) {
+      const start = m.index + m[0].lastIndexOf(m[1]);
+      sink.add(WARNING, "Thread." + m[1] + "() is deprecated", start, start + m[1].length, "deprecatedMethod");
+    }
+    return sink.out;
+  }
+
+  function typescriptCheck(text) {
+    const sink = makeSink(text, "TypeScript");
+    const visible = maskSource(text, "typescript", false);
+    const re = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*:\s*(string|number|boolean)\s*=/g;
+    const skip = new Set();
+    let m;
+    while ((m = re.exec(visible))) {
+      let start = re.lastIndex;
+      while (/\s/.test(text[start] || "")) start++;
+      let kind = "", end = start + 1;
+      if (text[start] === "\"" || text[start] === "'" || text[start] === "`") {
+        kind = "string";
+        const quote = text[start];
+        end = start + 1;
+        while (end < text.length && text[end] !== quote && text[end] !== "\n") { if (text[end] === "\\") end++; end++; }
+        if (text[end] === quote) end++;
+      } else {
+        const literal = /^(?:true|false|[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)/i.exec(text.slice(start));
+        if (!literal) continue;
+        kind = literal[0] === "true" || literal[0] === "false" ? "boolean" : "number";
+        end = start + literal[0].length;
+      }
+      if (kind === m[2]) continue;
+      skip.add(m[1]);
+      sink.add(ERROR, "Type '" + kind + "' is not assignable to type '" + m[2] + "'", start, end, "typeMismatch");
+    }
+    return { markers: sink.out, skip };
+  }
+
+  function generalCheck(lang, text, baseMarkers, options) {
+    if (C_LANGS[lang] && baseMarkers.some((m) => m.severity === ERROR)) return [];
+    if (lang === "html") return htmlCheck(text);
+    if (lang === "css") return cssCheck(text, !!(options && options.native));
+    const counts = identifierCounts(text, lang);
+    let markers = [];
+    let skip;
+    if (lang === "typescript") {
+      const result = typescriptCheck(text);
+      markers = markers.concat(result.markers);
+      skip = result.skip;
+    }
+    markers = markers.concat(unusedCheck(text, lang, counts, skip, baseMarkers));
+    markers = markers.concat(undefinedOutputCheck(text, lang, counts));
+    if (lang === "shell") markers = markers.concat(shellCheck(text));
+    if (lang === "go") markers = markers.concat(goCheck(text));
+    if (lang === "java") markers = markers.concat(javaCheck(text));
+    return markers;
+  }
+
+  const GENERAL_LANGS = new Set(["python", "javascript", "typescript", "shell", "php", "ruby", "html", "css"]);
+
+  function check(lang, text, options) {
+    text = String(text == null ? "" : text);
+    let base = [];
+    if (lang === "python") base = pyCheck(text);
+    else if (C_LANGS[lang]) base = cCheck(text, lang);
+    else if (!GENERAL_LANGS.has(lang)) return [];
+    return base.concat(generalCheck(lang, text, base, options));
+  }
+  const supports = (lang) => GENERAL_LANGS.has(lang) || !!C_LANGS[lang];
+
+  const api = { check, supports, tokenizePython: (text) => ({ tokens: pyTokenize(text, { add() {} }, true), starts: lineIndex(text) }), languages: Array.from(new Set(["python"].concat(Object.keys(C_LANGS), Array.from(GENERAL_LANGS)))) };
   root.DaphDiag = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 
@@ -643,7 +995,7 @@
         return;
       }
       let markers = [];
-      try { markers = check(d.lang, d.text); } catch (err) { markers = []; }
+      try { markers = check(d.lang, d.text, { native: !!d.native }); } catch (err) { markers = []; }
       self.postMessage({ id: d.id, markers });
     };
   }
