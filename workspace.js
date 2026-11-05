@@ -145,14 +145,14 @@
       if (node.expanded) load(node);
     }
 
-    function opened(meta, quiet) {
+    function opened(meta, quiet, collapsed) {
       if (!meta || typeof meta.uri !== "string" || typeof meta.name !== "string") return;
       generation++;
       nodes.clear();
       rootNode = nodeFor({ uri: meta.uri, name: meta.name, dir: true });
       rootNode.transient = !!meta.transient;
       rootNode.expanded = true;
-      visible = true;
+      visible = !collapsed;
       persist();
       render();
       layout();
@@ -201,7 +201,7 @@
 
     function restore() {
       const saved = savedFolder();
-      if (saved) opened(saved, true);
+      if (saved) opened(saved, true, true);
     }
 
     function back() {
