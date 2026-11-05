@@ -5,6 +5,7 @@
   const TEXT_CHARS = 1 << 20;
   const RECENTS_KEY = "daphcode.web.recents.v1";
   const FOLDER_KEY = "daphcode.folder.v1";
+  const STORAGE_ROOTS_KEY = "daphcode.web.storage.roots.v1";
   const DB_NAME = "daphcode.web.v1";
   const STORE_NAME = "handles";
 
@@ -167,10 +168,14 @@
     const listed = new Map();
     const uris = new Map();
     const fingerprints = new Map();
+    const authorizedRoots = new Map();
+    const storageHandles = new Map();
+    const storageUriPaths = new Map();
     let clip = "";
     let tokenSeq = 0;
     let dbPromise = null;
     let recentItems = readRecents();
+    let storageRootItems = readStorageRoots();
 
     function readRecents() {
       try {
@@ -180,6 +185,23 @@
       } catch (_) {
         return [];
       }
+    }
+
+    function readStorageRoots() {
+      try {
+        const value = JSON.parse(env.localStorage.getItem(STORAGE_ROOTS_KEY) || "[]");
+        if (!Array.isArray(value)) return [];
+        return value.filter((item) => item && typeof item.id === "string" && typeof item.name === "string").slice(0, 30);
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function persistStorageRoots() {
+      try {
+        storageRootItems = Array.from(authorizedRoots, ([id, item]) => ({ id, name: item.name }));
+        env.localStorage.setItem(STORAGE_ROOTS_KEY, JSON.stringify(storageRootItems));
+      } catch (_) {}
     }
 
     function persistRecents() {
@@ -332,6 +354,7 @@
       uris.set(identity.id, identity.uri);
       await databasePut(identity.id, handle);
       await deliverBlob(identity.uri, file, req);
+      return identity.uri;
     }
 
     function registerFile(file) {
@@ -422,6 +445,187 @@
       const file = await handle.getFile();
       if (file.size !== blob.size) throw new Error("The saved file size did not match the encoded document. Use Save As and verify the file before closing it.");
       return file;
+    }
+
+    function directStorage() {
+      return typeof env.showDirectoryPicker === "function" && env.isSecureContext !== false;
+    }
+
+    function storagePath(parsed) {
+      return "/" + parsed.id + (parsed.parts.length ? "/" + parsed.parts.join("/") : "");
+    }
+
+    function parseStoragePath(value) {
+      const parts = String(value || "").replace(/\\/g, "/").split("/").filter(Boolean);
+      if (!parts.length) return null;
+      const root = authorizedRoots.get(parts[0]);
+      if (!root) return null;
+      return { id: parts[0], root, parts: parts.slice(1) };
+    }
+
+    async function storageDirectory(value) {
+      const parsed = parseStoragePath(value);
+      if (!parsed) throw new Error("This folder is no longer authorized. Add it again to restore access.");
+      if (!await permission(parsed.root.handle, "read", true)) throw new Error("Permission to read this folder was not granted.");
+      let handle = parsed.root.handle;
+      let current = "/" + parsed.id;
+      for (const name of parsed.parts) {
+        current += "/" + name;
+        if (storageHandles.has(current)) {
+          handle = storageHandles.get(current);
+          continue;
+        }
+        handle = await handle.getDirectoryHandle(name);
+        storageHandles.set(current, handle);
+      }
+      return { handle, parsed, path: current };
+    }
+
+    async function storageFile(value, create) {
+      const parsed = parseStoragePath(value);
+      if (!parsed) throw new Error("This folder is no longer authorized. Add it again to restore access.");
+      if (!parsed.parts.length) throw new Error("The selected item is a folder.");
+      const parentPath = storagePath({ id: parsed.id, parts: parsed.parts.slice(0, -1) });
+      const parent = await storageDirectory(parentPath);
+      const name = parsed.parts[parsed.parts.length - 1];
+      const handle = await parent.handle.getFileHandle(name, { create: !!create });
+      const current = storagePath(parsed);
+      storageHandles.set(current, handle);
+      return { handle, name, parsed, path: current, parent };
+    }
+
+    async function listStorageDir(value, hidden) {
+      try {
+        const directory = await storageDirectory(value);
+        const writable = await permission(directory.parsed.root.handle, "readwrite", false);
+        const children = [];
+        for await (const child of directory.handle.values()) {
+          if (!hidden && child.name.startsWith(".")) continue;
+          children.push(child);
+        }
+        const entries = new Array(children.length);
+        let index = 0;
+        async function worker() {
+          while (index < children.length) {
+            const current = index++;
+            const child = children[current];
+            if (child.kind === "directory") {
+              entries[current] = { n: child.name, d: true, s: 0, m: 0 };
+              continue;
+            }
+            try {
+              const file = await child.getFile();
+              entries[current] = { n: child.name, d: false, s: file.size, m: file.lastModified };
+            } catch (_) {
+              entries[current] = null;
+            }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(8, children.length) }, () => worker()));
+        return {
+          ok: true,
+          path: directory.path,
+          parent: directory.parsed.parts.length ? storagePath({ id: directory.parsed.id, parts: directory.parsed.parts.slice(0, -1) }) : null,
+          entries: entries.filter(Boolean),
+          writable,
+        };
+      } catch (error) {
+        return { ok: false, path: value, error: error && error.message ? error.message : "Cannot read this folder." };
+      }
+    }
+
+    async function storageFileInfo(value) {
+      const parsed = parseStoragePath(value);
+      if (!parsed) return { exists: false, dir: false, parentWritable: false };
+      const parentWritable = await permission(parsed.root.handle, "readwrite", false);
+      if (!parsed.parts.length) return { exists: true, dir: true, parentWritable };
+      try {
+        const item = await storageFile(value, false);
+        const file = await item.handle.getFile();
+        return { exists: true, dir: false, size: file.size, m: file.lastModified, parentWritable };
+      } catch (error) {
+        if (error.name !== "NotFoundError" && error.name !== "TypeMismatchError") throw error;
+        try {
+          await storageDirectory(value);
+          return { exists: true, dir: true, parentWritable };
+        } catch (directoryError) {
+          if (directoryError.name !== "NotFoundError" && directoryError.name !== "TypeMismatchError") throw directoryError;
+          return { exists: false, dir: false, parentWritable };
+        }
+      }
+    }
+
+    async function requestStorageAccess() {
+      if (!directStorage()) return false;
+      try {
+        const handle = await env.showDirectoryPicker({ mode: "readwrite" });
+        if (!handle || handle.kind !== "directory") return false;
+        let id = null;
+        for (const [existingId, item] of authorizedRoots) {
+          if (typeof item.handle.isSameEntry !== "function") continue;
+          try {
+            if (await item.handle.isSameEntry(handle)) { id = existingId; break; }
+          } catch (_) {}
+        }
+        if (!id) id = randomId();
+        authorizedRoots.set(id, { handle, name: handle.name || "Folder" });
+        storageHandles.set("/" + id, handle);
+        persistStorageRoots();
+        await databasePut(id, handle);
+        return true;
+      } catch (error) {
+        if (error && error.name === "AbortError") return false;
+        throw error;
+      }
+    }
+
+    async function openStoragePath(value) {
+      try {
+        const item = await storageFile(value, false);
+        const uri = await openHandle(item.handle);
+        if (uri) storageUriPaths.set(uri, item.path);
+      } catch (error) {
+        failOpen(error);
+      }
+    }
+
+    async function saveStoragePath(req, value, text, encoding, bom) {
+      const chunks = consume(req, text);
+      try {
+        const parsed = parseStoragePath(value);
+        if (!parsed) throw new Error("This folder is no longer authorized. Add it again before saving.");
+        if (!await permission(parsed.root.handle, "readwrite", true)) throw new Error("Write permission was not granted for this folder.");
+        const item = await storageFile(value, true);
+        const file = await writeHandle(item.handle, chunks, encoding, bom);
+        const uri = makeUri("webfs", item.name);
+        const identity = parseUri(uri);
+        handles.set(identity.id, item.handle);
+        files.set(identity.id, file);
+        uris.set(identity.id, uri);
+        storageUriPaths.set(uri, item.path);
+        await databasePut(identity.id, item.handle);
+        remember(uri, item.name);
+        env.DaphHost.onSaveResult(req, true, uri, item.name, "");
+      } catch (error) {
+        saveFailure(req, "", error);
+      }
+    }
+
+    function storageRoots() {
+      return Array.from(authorizedRoots, ([id, item]) => ({ path: "/" + id, label: item.name, icon: "codicon-folder" }));
+    }
+
+    function storageState() {
+      if (!directStorage()) return { granted: false, unsupported: true };
+      const roots = storageRoots();
+      return { granted: true, styled: true, canGrant: true, home: roots.length ? roots[0].path : "" };
+    }
+
+    function directoryForUri(uri) {
+      const value = storageUriPaths.get(uri);
+      if (!value) return null;
+      const index = value.lastIndexOf("/");
+      return index > 0 ? value.slice(0, index) : null;
     }
 
     async function saveNative(req, uri, parsed, chunks, encoding, bom) {
@@ -526,6 +730,12 @@
         await databasePut(parsed.id, currentHandle);
         const next = makeUri("webfs", name, parsed.id);
         uris.set(parsed.id, next);
+        if (storageUriPaths.has(uri)) {
+          const previous = storageUriPaths.get(uri);
+          const slash = previous.lastIndexOf("/");
+          storageUriPaths.delete(uri);
+          storageUriPaths.set(next, previous.slice(0, slash + 1) + name);
+        }
         recentItems = recentItems.filter((item) => item.uri !== uri);
         remember(next, name);
         env.DaphHost.onRenameResult(req, true, next, name, "");
@@ -768,6 +978,7 @@
       recents: () => recentItems.map((item) => ({ uri: item.uri, name: item.name })),
       forgetRecent(uri) {
         recentItems = recentItems.filter((item) => item.uri !== uri);
+        storageUriPaths.delete(uri);
         persistRecents();
         const parsed = parseUri(uri);
         if (parsed && parsed.scheme === "webfs") databaseDelete(parsed.id);
@@ -788,9 +999,16 @@
       hideKeyboard() {
         if (env.document.activeElement && typeof env.document.activeElement.blur === "function") env.document.activeElement.blur();
       },
-      storageState: () => ({ granted: false, unsupported: true }),
-      requestAllFiles() {},
+      storageState,
+      requestAllFiles: requestStorageAccess,
+      storageRoots,
+      listDir: listStorageDir,
+      fileInfo: storageFileInfo,
+      openPath: openStoragePath,
+      saveToPath: saveStoragePath,
+      directoryForUri,
       fileAccessLabel() {
+        if (directStorage()) return "Built-in local file browser";
         return typeof env.showOpenFilePicker === "function" && env.isSecureContext !== false ? "Direct local file editing" : "Picker and download mode";
       }
     };
@@ -807,6 +1025,14 @@
           }
         }
       } catch (_) {}
+      for (const item of storageRootItems) {
+        const handle = await databaseGet(item.id);
+        if (handle && handle.kind === "directory") {
+          authorizedRoots.set(item.id, { handle, name: item.name });
+          storageHandles.set("/" + item.id, handle);
+        }
+      }
+      if (storageRootItems.length !== authorizedRoots.size) persistStorageRoots();
       for (const item of recentItems) {
         const parsed = parseUri(item.uri);
         if (!parsed) continue;

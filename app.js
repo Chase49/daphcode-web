@@ -274,6 +274,10 @@
   }
 
   function dirOfUri(uri) {
+    if (Host.directoryForUri) {
+      const directory = Host.directoryForUri(uri);
+      if (directory) return directory;
+    }
     if (!uri || !uri.startsWith("file://")) return null;
     try { const p = decodeURI(uri.slice(7)); return p.slice(0, p.lastIndexOf("/")) || "/"; } catch (_) { return null; }
   }
@@ -281,16 +285,19 @@
   function openFileFlow() {
     if (!refreshStorage()) { Host.openFiles(); return; }
     fileDialog().open({ dir: dirOfUri(active && active.uri), home: storage.home }).then((path) => {
-      if (!path) return;
-      const uri = "file://" + encodeURI(path);
-      const open = tabs.find((x) => x.uri === uri || (x.uri && dirOfUri(x.uri) !== null && decodeURI(x.uri.slice(7)) === path));
-      if (open) { activate(open); return; }
-      Host.openPath(path);
+      if (path) Host.openPath(path);
     });
   }
 
   function allFilesAccessFlow() {
     if (Host.web) {
+      if (Host.storageState && Host.storageState().granted) {
+        dialog("Built-in file browser", "Open File and Save As use DaphCode's VS Code-style file browser. Choose Add Folder to authorize a local folder, then browse and save inside it without another file picker. Browser security limits access to the folders you authorize.", [
+          { label: "Add Folder", primary: true, run: () => Host.requestAllFiles() },
+          { label: "OK" },
+        ]);
+        return;
+      }
       const direct = Host.fileAccessLabel && Host.fileAccessLabel() === "Direct local file editing";
       dialog("Browser file access", direct ? "This browser can open authorized local files, save them in place, and remember their file handles. Your documents stay on this device. Use Open File or drop files onto the editor to grant access." : "This browser uses standard file pickers and downloads. You can edit and save every text document, but saving creates a downloaded copy unless the browser offers a save destination. Your documents stay on this device.", [{ label: "OK", primary: true }]);
       return;
