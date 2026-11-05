@@ -2160,12 +2160,6 @@
       editor.getPosition() && editor.getPosition().equals(position) && editor.hasWidgetFocus() && !(active && active.huge);
   }
 
-  // A cold editor has no provider-item cache to reuse. Ask the same pinned
-  // Monaco provider pipeline for a trigger session at the trigger character,
-  // while leaving the real caret and document untouched. The resulting items
-  // are then filtered by Monaco at the actual deleted prefix. This is only a
-  // fallback after the normal request was empty; it is not a second source of
-  // suggestions and it does not bypass the quick-suggestion guards above.
   async function primeSuggestAfterDelete(pending) {
     const model = editor.getModel();
     const position = editor.getPosition();
@@ -2241,9 +2235,6 @@
       if (!items.has(item.provider)) items.set(item.provider, []);
       items.get(item.provider).push(item);
     }
-    // SuggestModel owns provider-list disposables for its normal sessions.
-    // Add this manually primed list to the same store so accepting, blurring,
-    // or disposing the editor releases it along with native suggestions.
     if (controller.model._completionDisposables && result.disposable) controller.model._completionDisposables.add(result.disposable);
     finishSuggestAfterDelete(pending);
     controller.model.trigger({ auto: true, retrigger: true, completionOptions: { providerItemsToReuse: items } });
@@ -2432,9 +2423,6 @@
       suggestAfterDeleteForwardKey = null;
       cancelSuggestAfterDeletePending();
       suggestAfterDeleteSeq++;
-      // Forward Delete can leave the caret at the same position, in which
-      // case Monaco need not emit a cursor-selection event. The key marker
-      // makes this path specific to Delete rather than arbitrary model edits.
       if (forwardDelete && editor.getSelection() && editor.getSelection().isEmpty()) scheduleSuggestAfterDelete();
     });
     editor.onDidChangeCursorSelection((event) => {
@@ -2458,8 +2446,6 @@
       if (key === "Delete") {
         const marker = {};
         suggestAfterDeleteForwardKey = marker;
-        // Monaco applies the edit synchronously after keydown. Clear an
-        // unconsumed marker so a later programmatic edit cannot inherit it.
         setTimeout(() => { if (suggestAfterDeleteForwardKey === marker) suggestAfterDeleteForwardKey = null; }, 0);
       } else if (key !== "Backspace") {
         suggestAfterDeleteForwardKey = null;
