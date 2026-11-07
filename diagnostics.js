@@ -715,6 +715,8 @@
         const name = m[group];
         if (group === 3 && excludedTypes.has(m[2].trim())) continue;
         if (!name || name.startsWith("_") || (skipNames && skipNames.has(name)) || occupied.has(lineNumber) || counts[name] !== 1) continue;
+        // Python ALL_CAPS names are constants/public class data, regardless of indentation or scope.
+        if (lang === "python" && /^[A-Z][A-Z0-9_]*$/.test(name)) continue;
         if (modulePython && lang === "python" && !/^\s/.test(line)) continue;
         const within = m[0].lastIndexOf(name);
         const start = offset + within;
