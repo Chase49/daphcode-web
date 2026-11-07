@@ -557,7 +557,12 @@
     diagPending.delete(id);
     if (!p || !tabs.includes(p.t) || p.t.model.isDisposed()) return;
     if (p.t.model.getVersionId() !== p.ver || p.t.model.getLanguageId() !== p.lang) return; // stale; a newer run is scheduled
-    monaco.editor.setModelMarkers(p.t.model, DIAG_OWNER, markers || []);
+    const visibleMarkers = (markers || []).map((marker) => {
+      if (marker.source !== "DaphCode" || marker.code !== "unusedVariable") return marker;
+      const { source, code, ...visibleMarker } = marker;
+      return visibleMarker;
+    });
+    monaco.editor.setModelMarkers(p.t.model, DIAG_OWNER, visibleMarkers);
     self.__diagRuns = (self.__diagRuns || 0) + 1;
   }
 
@@ -1803,6 +1808,12 @@
       for (const a of ["title", "aria-label"]) {
         const v = n.getAttribute(a);
         if (v && KEY_HINT.test(v)) n.setAttribute(a, v.replace(KEY_HINT, ""));
+      }
+    }
+    for (const hover of root.querySelectorAll(".monaco-hover")) {
+      for (const item of hover.querySelectorAll("div")) {
+        const label = item.textContent.trim();
+        if (!item.childElementCount && (label === "No quick fixes" || label === "No quick fixes available")) item.hidden = true;
       }
     }
   }
