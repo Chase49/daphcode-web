@@ -108,13 +108,41 @@ body:not(.no-editor) #breadcrumbs,
 body:not(.no-editor) #editor-area { background: var(--code-editor-bg); }
 #editor { position: absolute; inset: 0; touch-action: none; }
 #editor .monaco-editor .view-lines { user-select: none; -webkit-user-select: none; }
-/* Marker popups show only the diagnostic message; ordinary Monaco hovers are untouched. */
-#editor .monaco-hover.daphcode-marker-hover .hover-row.status-bar,
-#editor .monaco-hover.daphcode-marker-hover .hover-row.daphcode-marker-hover-extra { display: none !important; }
+/* Marker hovers size to the diagnostic text, preserve Monaco's View Problem row, and
+   suppress only supplemental/action rows. Ordinary Monaco hovers are untouched. */
+#editor .monaco-hover.daphcode-marker-hover .hover-row.daphcode-marker-hover-extra,
+#editor .monaco-hover.daphcode-marker-hover .daphcode-marker-hover-quickfix { display: none !important; }
+#editor .monaco-hover.daphcode-marker-hover,
+#editor .monaco-hover.daphcode-marker-hover .monaco-scrollable-element,
+#editor .monaco-hover.daphcode-marker-hover .monaco-hover-content,
+#editor .monaco-hover.daphcode-marker-hover .markdown-hover,
+#editor .monaco-hover.daphcode-marker-hover .marker-hover,
+#editor .monaco-hover.daphcode-marker-hover .marker.hover-contents {
+  box-sizing: border-box; width: max-content !important; max-width: 90vw !important;
+  max-width: min(90vw, 640px, var(--daphcode-marker-hover-max-width, 90vw)) !important;
+}
+#editor .monaco-hover.daphcode-marker-hover { translate: var(--daphcode-marker-hover-shift-x, 0px) 0px; }
 #editor .monaco-hover.daphcode-marker-hover,
 #editor .monaco-hover.daphcode-marker-hover .monaco-scrollable-element,
 #editor .monaco-hover.daphcode-marker-hover .monaco-hover-content {
   height: auto !important; min-height: 0 !important; max-height: 250px !important;
+}
+#editor .monaco-hover.daphcode-marker-hover .markdown-hover,
+#editor .monaco-hover.daphcode-marker-hover .marker-hover,
+#editor .monaco-hover.daphcode-marker-hover .marker.hover-contents,
+#editor .monaco-hover.daphcode-marker-hover .marker.hover-contents * {
+  white-space: nowrap !important;
+}
+#editor .monaco-hover.daphcode-marker-hover .marker.hover-contents { overflow-x: auto !important; overflow-y: hidden !important; }
+#editor .monaco-hover.daphcode-marker-hover .hover-row.status-bar {
+  box-sizing: border-box !important; display: flex !important; width: 100% !important;
+  min-width: calc(100% + 2px) !important; max-width: none !important; margin-right: 0 !important; white-space: nowrap !important;
+  background-color: var(--vscode-editorHoverWidget-statusBarBackground) !important;
+}
+#editor .monaco-hover.daphcode-marker-hover .hover-row.status-bar .actions {
+  box-sizing: border-box; display: flex !important; flex: 1 1 auto !important;
+  width: 100% !important; min-width: 0; padding-left: 8px !important; padding-right: 8px !important;
+  background: transparent !important; background-color: transparent !important;
 }
 body.no-editor #editor { display: none; }
 

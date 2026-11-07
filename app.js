@@ -1826,8 +1826,10 @@
     }, true);
   }
 
-  // Strip desktop shortcut hints like "Match Case (Alt+C)" from Monaco tooltips.
+  // Strip desktop shortcut hints from tooltip/accessibility attrs only; preserve the visible
+  // Monaco label "View Problem (Alt+F8)" on diagnostic hovers.
   const KEY_HINT = /\s*\((?:Ctrl|Alt|Shift|Cmd|Meta|Enter|Escape|Esc|F\d+|Up|Down|Left|Right|Tab)[^)]*\)\s*$/;
+  const QUICK_FIX_LABEL = /^(?:Quick Fix(?:\s*(?:\.\.\.|…))?|No quick fixes available)(?:\s+\([^)]*\))?$/i;
   function stripKeyHints(root) {
     for (const n of root.querySelectorAll("[title], [aria-label]")) {
       for (const a of ["title", "aria-label"]) {
@@ -1836,17 +1838,46 @@
       }
     }
     for (const hover of root.querySelectorAll(".monaco-hover")) {
-      // Keep only the marker message row visible. Other hover rows (actions, related details,
-      // and language-service docs) remain available on ordinary symbol/type hovers.
+      // Keep the message and status-bar rows; hide supplemental rows and the Quick Fix action.
+      // Other hover rows remain untouched for ordinary symbol/type hovers.
       const markerContent = hover.querySelector(".marker.hover-contents");
       const markerHover = !!markerContent;
       hover.classList.toggle("daphcode-marker-hover", markerHover);
       for (const row of hover.querySelectorAll(".hover-row")) {
         const isMessageRow = markerHover && row.contains(markerContent);
+        const isStatusRow = markerHover && row.classList.contains("status-bar");
         row.classList.toggle("daphcode-marker-hover-message", isMessageRow);
-        row.classList.toggle("daphcode-marker-hover-extra", markerHover && !isMessageRow);
+        row.classList.toggle("daphcode-marker-hover-extra", markerHover && !isMessageRow && !isStatusRow);
       }
+      for (const action of hover.querySelectorAll(".hover-row, a, button, [role='button'], .action-item, .actions > *")) {
+        const label = (action.innerText || action.textContent || "").replace(/\s+/g, " ").trim();
+        action.classList.toggle("daphcode-marker-hover-quickfix", markerHover && QUICK_FIX_LABEL.test(label));
+      }
+      if (markerHover) fitMarkerHover(hover);
     }
+  }
+  function fitMarkerHover(hover) {
+    if (hover.__daphMarkerFitPending) return;
+    hover.__daphMarkerFitPending = true;
+    requestAnimationFrame(() => {
+      hover.__daphMarkerFitPending = false;
+      if (!hover.isConnected || !hover.classList.contains("daphcode-marker-hover")) return;
+      const editor = hover.closest(".monaco-editor");
+      const editorRect = editor ? editor.getBoundingClientRect() : { left: 0, right: innerWidth };
+      const minX = Math.max(0, editorRect.left) + 8;
+      const maxX = Math.min(innerWidth, editorRect.right) - 8;
+      const available = Math.max(80, maxX - minX);
+      hover.style.setProperty("--daphcode-marker-hover-max-width", Math.min(available, innerWidth * 0.9, 640) + "px");
+      const previous = parseFloat(hover.dataset.daphcodeMarkerHoverShiftX || "0") || 0;
+      const rect = hover.getBoundingClientRect();
+      const baseLeft = rect.left - previous;
+      const baseRight = rect.right - previous;
+      let shift = 0;
+      if (baseRight > maxX) shift = maxX - baseRight;
+      if (baseLeft + shift < minX) shift = minX - baseLeft;
+      hover.dataset.daphcodeMarkerHoverShiftX = String(shift);
+      hover.style.setProperty("--daphcode-marker-hover-shift-x", shift + "px");
+    });
   }
   function watchKeyHints() {
     const target = $("#editor");
