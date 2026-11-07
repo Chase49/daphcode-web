@@ -552,17 +552,41 @@
     return diagWorker;
   }
 
+  function withoutMarkerHoverMetadata(markers) {
+    return (markers || []).map((marker) => {
+      if (!marker || typeof marker !== "object") return marker;
+      const { source, code, ...visibleMarker } = marker;
+      return visibleMarker;
+    });
+  }
+
+  let unfilteredSetModelMarkers = null;
+  function setModelMarkers(model, owner, markers) {
+    const api = monaco && monaco.editor;
+    if (!api) return;
+    const setter = unfilteredSetModelMarkers || api.setModelMarkers;
+    return setter.call(api, model, owner, withoutMarkerHoverMetadata(markers));
+  }
+
+  // Route every marker producer through the same metadata filter, including Monaco's built-in
+  // CSS, HTML, and TypeScript services, which do not pass through diagDone().
+  function installMarkerHoverMetadataFilter() {
+    const api = monaco && monaco.editor;
+    if (!api || !api.setModelMarkers || api.setModelMarkers.__daphCodeMarkerMetadataFilter) return;
+    unfilteredSetModelMarkers = api.setModelMarkers;
+    const filteredSetModelMarkers = function (model, owner, markers) {
+      return setModelMarkers(model, owner, markers);
+    };
+    Object.defineProperty(filteredSetModelMarkers, "__daphCodeMarkerMetadataFilter", { value: true });
+    api.setModelMarkers = filteredSetModelMarkers;
+  }
+
   function diagDone(id, markers) {
     const p = diagPending.get(id);
     diagPending.delete(id);
     if (!p || !tabs.includes(p.t) || p.t.model.isDisposed()) return;
     if (p.t.model.getVersionId() !== p.ver || p.t.model.getLanguageId() !== p.lang) return; // stale; a newer run is scheduled
-    const visibleMarkers = (markers || []).map((marker) => {
-      if (marker.source !== "DaphCode" || marker.code !== "unusedVariable") return marker;
-      const { source, code, ...visibleMarker } = marker;
-      return visibleMarker;
-    });
-    monaco.editor.setModelMarkers(p.t.model, DIAG_OWNER, visibleMarkers);
+    setModelMarkers(p.t.model, DIAG_OWNER, markers);
     self.__diagRuns = (self.__diagRuns || 0) + 1;
   }
 
@@ -574,7 +598,8 @@
     const m = /line (\d+) at column (\d+): ([^\n]+)/.exec(err.textContent || "");
     if (!m) return [{ severity: 8, message: "XML is not well-formed", startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 2, source: "XML" }];
     const line = Math.max(1, +m[1]), col = Math.max(1, +m[2]);
-    return [{ severity: 8, message: m[3].trim(), startLineNumber: line, startColumn: Math.max(1, col - 1), endLineNumber: line, endColumn: col + 1, source: "XML" }];
+    const message = m[3].replace(/\s*Below is a rendering of the page[\s\S]*$/i, "").trim();
+    return [{ severity: 8, message: message || "XML is not well-formed", startLineNumber: line, startColumn: Math.max(1, col - 1), endLineNumber: line, endColumn: col + 1, source: "XML" }];
   }
 
   function scheduleDiag(t, delay) {
@@ -587,7 +612,7 @@
     const lang = t.model.getLanguageId();
     const ok = lang === "xml" || (self.DaphDiag && DaphDiag.supports(lang));
     if (!ok || t.huge || t.model.getValueLength() > DIAG_MAX_CHARS) {
-      if (monaco.editor.getModelMarkers({ owner: DIAG_OWNER, resource: t.model.uri }).length) monaco.editor.setModelMarkers(t.model, DIAG_OWNER, []);
+      if (monaco.editor.getModelMarkers({ owner: DIAG_OWNER, resource: t.model.uri }).length) setModelMarkers(t.model, DIAG_OWNER, []);
       return;
     }
     const id = ++diagSeq;
@@ -1811,9 +1836,15 @@
       }
     }
     for (const hover of root.querySelectorAll(".monaco-hover")) {
-      for (const item of hover.querySelectorAll("div")) {
-        const label = item.textContent.trim();
-        if (!item.childElementCount && (label === "No quick fixes" || label === "No quick fixes available")) item.hidden = true;
+      // Keep only the marker message row visible. Other hover rows (actions, related details,
+      // and language-service docs) remain available on ordinary symbol/type hovers.
+      const markerContent = hover.querySelector(".marker.hover-contents");
+      const markerHover = !!markerContent;
+      hover.classList.toggle("daphcode-marker-hover", markerHover);
+      for (const row of hover.querySelectorAll(".hover-row")) {
+        const isMessageRow = markerHover && row.contains(markerContent);
+        row.classList.toggle("daphcode-marker-hover-message", isMessageRow);
+        row.classList.toggle("daphcode-marker-hover-extra", markerHover && !isMessageRow);
       }
     }
   }
@@ -2657,6 +2688,7 @@
     require.config({ paths: { vs: vsBase } });
     require(["vs/editor/editor.main"], (m) => {
       monaco = m || self.monaco;
+      installMarkerHoverMetadataFilter();
       const cssDefaults = monaco.languages.css && monaco.languages.css.cssDefaults;
       if (cssDefaults) {
         const current = typeof cssDefaults.getDiagnosticsOptions === "function" ? cssDefaults.getDiagnosticsOptions() : {};

@@ -108,6 +108,14 @@ body:not(.no-editor) #breadcrumbs,
 body:not(.no-editor) #editor-area { background: var(--code-editor-bg); }
 #editor { position: absolute; inset: 0; touch-action: none; }
 #editor .monaco-editor .view-lines { user-select: none; -webkit-user-select: none; }
+/* Marker popups show only the diagnostic message; ordinary Monaco hovers are untouched. */
+#editor .monaco-hover.daphcode-marker-hover .hover-row.status-bar,
+#editor .monaco-hover.daphcode-marker-hover .hover-row.daphcode-marker-hover-extra { display: none !important; }
+#editor .monaco-hover.daphcode-marker-hover,
+#editor .monaco-hover.daphcode-marker-hover .monaco-scrollable-element,
+#editor .monaco-hover.daphcode-marker-hover .monaco-hover-content {
+  height: auto !important; min-height: 0 !important; max-height: 250px !important;
+}
 body.no-editor #editor { display: none; }
 
 #welcome {
