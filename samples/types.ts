@@ -20,5 +20,5 @@ const shapes: Shape[] = [
 ];
 
 const total: number = shapes.reduce((sum, s) => sum + area(s), 0);
-const wrong: string = total;
-console.log(total.toFixed(2));
+const wrong: string = total.toFixed(2);
+console.log(total.toFixed(2), wrong);
