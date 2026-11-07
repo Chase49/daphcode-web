@@ -117,7 +117,7 @@ body:not(.no-editor) #editor-area { background: var(--code-editor-bg); }
 #editor .monaco-hover.daphcode-marker-hover .monaco-hover-content,
 #editor .monaco-hover.daphcode-marker-hover .markdown-hover,
 #editor .monaco-hover.daphcode-marker-hover .marker-hover,
-#editor .monaco-hover.daphcode-marker-hover .marker.hover-contents {
+#editor .monaco-hover.daphcode-marker-hover .hover-contents {
   box-sizing: border-box; width: max-content !important; max-width: 90vw !important;
   max-width: min(90vw, 640px, var(--daphcode-marker-hover-max-width, 90vw)) !important;
 }
@@ -125,18 +125,28 @@ body:not(.no-editor) #editor-area { background: var(--code-editor-bg); }
 #editor .monaco-hover.daphcode-marker-hover,
 #editor .monaco-hover.daphcode-marker-hover .monaco-scrollable-element,
 #editor .monaco-hover.daphcode-marker-hover .monaco-hover-content {
-  height: auto !important; min-height: 0 !important; max-height: 250px !important;
+  height: auto !important; min-height: 0 !important; max-height: none !important; overflow: hidden !important;
 }
-#editor .monaco-hover.daphcode-marker-hover .markdown-hover,
-#editor .monaco-hover.daphcode-marker-hover .marker-hover,
+/* Monaco reserves 2px at the right of its hover content for the built-in scrollbar.
+   We hide that scrollbar on marker hovers, so remove the reserved gutter to keep widths exact. */
+#editor .monaco-hover.daphcode-marker-hover .monaco-hover-content {
+  padding-right: 0 !important; padding-bottom: 0 !important;
+}
+#editor .monaco-hover.daphcode-marker-hover .hover-contents,
 #editor .monaco-hover.daphcode-marker-hover .marker.hover-contents,
 #editor .monaco-hover.daphcode-marker-hover .marker.hover-contents * {
-  white-space: nowrap !important;
+  box-sizing: border-box; white-space: normal !important; overflow-wrap: anywhere !important;
 }
-#editor .monaco-hover.daphcode-marker-hover .marker.hover-contents { overflow-x: auto !important; overflow-y: hidden !important; }
+#editor .monaco-hover.daphcode-marker-hover .hover-contents,
+#editor .monaco-hover.daphcode-marker-hover .marker.hover-contents {
+  max-height: none !important; overflow: hidden !important;
+}
+#editor .monaco-hover.daphcode-marker-hover .scrollbar,
+#editor .monaco-hover.daphcode-marker-hover .scrollbar.horizontal,
+#editor .monaco-hover.daphcode-marker-hover .scrollbar.vertical { display: none !important; }
 #editor .monaco-hover.daphcode-marker-hover .hover-row.status-bar {
   box-sizing: border-box !important; display: flex !important; width: 100% !important;
-  min-width: calc(100% + 2px) !important; max-width: none !important; margin-right: 0 !important; white-space: nowrap !important;
+  min-width: 0 !important; max-width: none !important; margin-right: 0 !important; white-space: nowrap !important;
   background-color: var(--vscode-editorHoverWidget-statusBarBackground) !important;
 }
 #editor .monaco-hover.daphcode-marker-hover .hover-row.status-bar .actions {
