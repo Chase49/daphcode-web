@@ -7,6 +7,6 @@
     "wordWrap": false,
     "theme": { "name": "Dark+", "base": "vs-dark" }
   },
-  "broken": [1, 2, 3,],
+  "broken": [1, 2, 3],
   "nullable": null
 }
